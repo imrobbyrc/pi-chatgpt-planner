@@ -232,6 +232,8 @@ export class PlannerMcpHttpServer {
     this.app = app;
   }
 
+  get running(): boolean { return this.app !== undefined; }
+
   async stop(): Promise<void> {
     const app = this.app;
     this.app = undefined;

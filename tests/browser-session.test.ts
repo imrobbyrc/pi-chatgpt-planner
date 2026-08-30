@@ -92,7 +92,7 @@ test("creates target, persists identity before connect, and sends there", async 
   };
   fakePlaywright.connect = undefined;
   const connect = (async () => ({ contexts: () => [{ pages: () => [fakePage] }], close: async () => undefined })) as any;
-  const task = { id: "123e4567-e89b-12d3-a456-426614174000", request: "task", workspaceRoot: "/tmp", createdAt: "", updatedAt: "", status: "pending_planning" } as PlannerTask;
+  const task = { id: "123e4567-e89b-12d3-a456-426614174000", request: "task", workspaceRoot: "/tmp", createdAt: "", updatedAt: "", status: "planning" } as PlannerTask;
   const config = { cdpHost: "127.0.0.1", cdpPort: 9222, chatgptUrl: "https://chatgpt.com/", chatgptAppName: "Pi Workspace", browserAutoAttachApp: true } as PlannerConfig;
   const result = await new ChatGptBrowserController(config, fakeCdp).sendPlanningRequest(task, async (id) => { events.push(`persist:${id}`); });
   assert.deepEqual(events.slice(0, 3), ["new", "persist:planner-target", "connect:planner-target"]);

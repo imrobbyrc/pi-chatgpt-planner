@@ -69,6 +69,10 @@ export async function loadConfig(): Promise<PlannerConfig> {
       envBoolean("PLANNER_BROWSER_AUTO_ATTACH_APP") ?? file.browserAutoAttachApp ?? true,
     planTimeoutMs: envNumber("PLANNER_TIMEOUT_MS") ?? file.planTimeoutMs ?? 10 * 60 * 1000,
     maxReadLines: envNumber("PLANNER_MAX_READ_LINES") ?? file.maxReadLines ?? 500,
-    maxFileBytes: envNumber("PLANNER_MAX_FILE_BYTES") ?? file.maxFileBytes ?? 1_000_000
+    maxFileBytes: envNumber("PLANNER_MAX_FILE_BYTES") ?? file.maxFileBytes ?? 1_000_000,
+    tunnelBinary: process.env.PLANNER_TUNNEL_BINARY ?? file.tunnelBinary ?? "tunnel-client",
+    tunnelProfile: process.env.PLANNER_TUNNEL_PROFILE ?? file.tunnelProfile ?? "pi-planner",
+    tunnelHealthPort: envNumber("PLANNER_TUNNEL_HEALTH_PORT") ?? file.tunnelHealthPort ?? 8080,
+    tunnelStartupTimeoutMs: envNumber("PLANNER_TUNNEL_STARTUP_TIMEOUT_MS") ?? file.tunnelStartupTimeoutMs ?? 120_000
   };
 }
