@@ -20,7 +20,11 @@ const config: PlannerConfig = {
   browserAutoAttachApp: true,
   planTimeoutMs: 600_000,
   maxReadLines: 500,
-  maxFileBytes: 1_000_000
+  maxFileBytes: 1_000_000,
+  tunnelBinary: "tunnel-client",
+  tunnelProfile: "pi-planner",
+  tunnelHealthPort: 8080,
+  tunnelStartupTimeoutMs: 120_000
 };
 
 test("Dia launch uses isolated profile and loopback CDP", () => {

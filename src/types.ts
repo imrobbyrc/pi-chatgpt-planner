@@ -59,4 +59,5 @@ export interface PlannerConfig {
   browserProfileDir: string; browserStartupTimeoutMs: number; cdpHost: string; cdpPort: number;
   chatgptUrl: string; chatgptAppName: string; browserAutoAttachApp: boolean;
   planTimeoutMs: number; maxReadLines: number; maxFileBytes: number;
+  tunnelBinary: string; tunnelProfile: string; tunnelHealthPort: number; tunnelStartupTimeoutMs: number;
 }

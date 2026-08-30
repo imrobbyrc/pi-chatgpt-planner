@@ -3,17 +3,32 @@ import { TaskStore } from "../task-store.js";
 import { PlannerMcpHttpServer } from "../mcp/server.js";
 import { ChatGptBrowserController, type BrowserSendResult } from "../browser/chatgpt.js";
 import { PiMessageExecutor, type PlannerExecutor } from "../executor.js";
+import { PlannerInfrastructureManager, type InfrastructureDependency, type PlannerInfrastructureStatus, type ResourceState } from "./infrastructure.js";
+import { SecureTunnel } from "./tunnel.js";
+import { PlannerDia } from "./dia.js";
 
 export class PlannerRuntime {
   readonly store: TaskStore;
   readonly mcp: PlannerMcpHttpServer;
   readonly browser: ChatGptBrowserController;
   private activeExecutor: PlannerExecutor | undefined;
+  readonly infrastructure: PlannerInfrastructureManager;
+  readonly tunnel: SecureTunnel;
+  readonly dia: PlannerDia;
 
   constructor(readonly config: PlannerConfig, private readonly executor?: PlannerExecutor) {
     this.store = new TaskStore(config.stateDir);
     this.mcp = new PlannerMcpHttpServer(this.store, config);
     this.browser = new ChatGptBrowserController(config);
+    this.tunnel = new SecureTunnel(config);
+    this.dia = new PlannerDia(config);
+    const mcpDependency: InfrastructureDependency = {
+      probe: async (): Promise<ResourceState> => (this.mcp.running ? "ready" : "stopped"),
+      ensureStarted: async () => { await this.mcp.start(); return "ready"; },
+      get managedByPi() { return true; },
+      stop: () => this.mcp.stop()
+    };
+    this.infrastructure = new PlannerInfrastructureManager(mcpDependency, this.tunnel, this.dia);
   }
 
   async approveTask(id: string, executor = this.executor): Promise<PlannerTask> {
@@ -40,11 +55,21 @@ export class PlannerRuntime {
   }
 
   async start(): Promise<void> {
+    // Lazy minimal start (local MCP only); full tunnel+Dia startup is /chatgpt-planner-start.
     await this.mcp.start();
   }
 
-  async stop(): Promise<void> {
-    await this.mcp.stop();
+  async startInfrastructure(onProgress?: (message: string) => void): Promise<PlannerInfrastructureStatus> {
+    await this.mcp.start();
+    return this.infrastructure.start(onProgress);
+  }
+
+  async stop(): Promise<PlannerInfrastructureStatus> {
+    return this.infrastructure.stopOwnedResources();
+  }
+
+  async infraSnapshot(): Promise<PlannerInfrastructureStatus> {
+    return this.infrastructure.snapshot();
   }
 
   async debugBrowser(): Promise<{ path: string; report: unknown }> {
