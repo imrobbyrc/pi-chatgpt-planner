@@ -10,7 +10,7 @@ test("TaskStore creates and receives a plan", async () => {
   try {
     const store = new TaskStore(dir);
     const task = await store.createTask("/tmp/workspace", "Implement feature X");
-    assert.equal(task.status, "pending_planning");
+    assert.equal(task.status, "planning");
 
     const withChat = await store.updateChat(task.id, {
       targetId: "planner-target",
@@ -33,7 +33,7 @@ test("TaskStore creates and receives a plan", async () => {
       openQuestions: []
     });
 
-    assert.equal(completed.status, "plan_received");
+    assert.equal(completed.status, "awaiting_approval");
     assert.equal(completed.plan?.summary, "Feature X");
   } finally {
     await rm(dir, { recursive: true, force: true });

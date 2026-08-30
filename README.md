@@ -264,6 +264,17 @@ No Pi implementation model is invoked by `/chatgpt-plan` in V0.
 
 Start a new external planning round-trip.
 
+### Test V1 execution
+
+Use a harmless docs-only task such as `/chatgpt-plan Add one tiny README note`, wait for the returned task id, then explicitly approve Pi-only execution:
+
+```text
+/chatgpt-plan-approve <task-id>
+/chatgpt-plan-status <task-id>
+```
+
+Status should end at `execution_completed`. Approval does not automatically commit, push, deploy, or start review.
+
 ```text
 /chatgpt-plan-status [task-id]
 ```
