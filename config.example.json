@@ -1,0 +1,16 @@
+{
+  "mcpHost": "127.0.0.1",
+  "mcpPort": 8765,
+  "mcpPath": "/mcp",
+  "publicMcpUrl": "https://pi-planner.example.com/mcp",
+  "browser": "dia",
+  "browserStartupTimeoutMs": 20000,
+  "cdpHost": "127.0.0.1",
+  "cdpPort": 9222,
+  "chatgptUrl": "https://chatgpt.com/",
+  "chatgptAppName": "Pi Workspace",
+  "browserAutoAttachApp": true,
+  "planTimeoutMs": 600000,
+  "maxReadLines": 500,
+  "maxFileBytes": 1000000
+}

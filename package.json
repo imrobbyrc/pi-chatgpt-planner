@@ -1,0 +1,46 @@
+{
+  "name": "pi-chatgpt-planner",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Pi-native bridge that uses ChatGPT Web as an external planner while Pi remains the coding harness/executor.",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-coding-agent",
+    "chatgpt",
+    "mcp",
+    "planner"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/chatgpt-planner/index.ts"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "doctor": "tsx scripts/doctor.ts",
+    "browser": "tsx scripts/start-browser.ts",
+    "chrome": "PLANNER_BROWSER=chrome tsx scripts/start-browser.ts",
+    "dev:mcp": "tsx scripts/dev-mcp.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/node": "^2.0.0",
+    "@modelcontextprotocol/server": "^2.0.0",
+    "chrome-remote-interface": "^0.33.3",
+    "fastify": "^5.6.0",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/chrome-remote-interface": "^0.34.0",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^6.0.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}
