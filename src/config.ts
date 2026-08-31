@@ -73,6 +73,8 @@ export async function loadConfig(): Promise<PlannerConfig> {
     tunnelBinary: process.env.PLANNER_TUNNEL_BINARY ?? file.tunnelBinary ?? "tunnel-client",
     tunnelProfile: process.env.PLANNER_TUNNEL_PROFILE ?? file.tunnelProfile ?? "pi-planner",
     tunnelHealthPort: envNumber("PLANNER_TUNNEL_HEALTH_PORT") ?? file.tunnelHealthPort ?? 8080,
-    tunnelStartupTimeoutMs: envNumber("PLANNER_TUNNEL_STARTUP_TIMEOUT_MS") ?? file.tunnelStartupTimeoutMs ?? 120_000
+    tunnelStartupTimeoutMs: envNumber("PLANNER_TUNNEL_STARTUP_TIMEOUT_MS") ?? file.tunnelStartupTimeoutMs ?? 120_000,
+    maxReviewIterations: envNumber("PLANNER_MAX_REVIEW_ITERATIONS") ?? file.maxReviewIterations ?? 3,
+    reviewTimeoutMs: envNumber("PLANNER_REVIEW_TIMEOUT_MS") ?? file.reviewTimeoutMs ?? 10 * 60 * 1000
   };
 }

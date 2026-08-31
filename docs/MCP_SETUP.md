@@ -64,10 +64,18 @@ read_file
 search_workspace
 git_status
 git_diff
+review_context
+test_status
+list_agent_skills
+get_agent_skill
+list_active_methods
+get_method_context
 submit_plan
+submit_plan_revision
+submit_review
 ```
 
-`submit_plan` is intentionally a non-destructive write action. If the ChatGPT workspace only allows read/fetch MCP, the automatic V0 handoff cannot finish.
+`submit_plan`, `submit_plan_revision`, and `submit_review` are protocol-state writes, not workspace writes. All skill/method tools are bounded read-only discovery/content reads; ChatGPT cannot activate methods or execute skills. If the ChatGPT workspace only allows read/fetch MCP, planning/revision/review handoff cannot finish.
 
 ## Tool safety
 

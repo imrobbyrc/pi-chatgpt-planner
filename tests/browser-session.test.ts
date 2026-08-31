@@ -99,3 +99,59 @@ test("creates target, persists identity before connect, and sends there", async 
   assert.equal(result.chat.targetId, "planner-target");
   assert.equal(sliderValue, 2);
 });
+
+test("review reuses exact stored target and never creates a new target", async () => {
+  const events: string[] = [];
+  const target = { id: "planner-target", type: "page", url: "https://chatgpt.com/c/planner-conversation" };
+  const evaluate = async ({ expression }: { expression: string }) => {
+    if (expression === "document.readyState") return { result: { value: "complete" } };
+    if (expression.includes("document.readyState") && expression.includes("button:")) return { result: { value: { ready: "complete", button: true } } };
+    if (expression === "location.href") return { result: { value: target.url } };
+    return { result: { value: true } };
+  };
+  const fakeCdp = Object.assign(async ({ target: received }: { target: string }) => {
+    events.push(`connect:${received}`);
+    return {
+      Page: { enable: async () => undefined },
+      Runtime: { enable: async () => undefined, evaluate },
+      Input: {
+        insertText: async ({ text }: { text: string }) => events.push(`insert:${text.includes("submit_review") ? "review" : text.includes("submit_plan_revision") ? "revision" : "other"}`),
+        dispatchKeyEvent: async ({ type, key }: { type: string; key: string }) => events.push(`${type}:${key}`)
+      },
+      close: async () => events.push("close")
+    };
+  }, {
+    List: async () => [target],
+    New: async () => { events.push("new"); return target; }
+  }) as any;
+  const config = { cdpHost: "127.0.0.1", cdpPort: 9222 } as PlannerConfig;
+  const task = {
+    id: "123e4567-e89b-12d3-a456-426614174000", request: "task", workspaceRoot: "/tmp",
+    createdAt: "", updatedAt: "", status: "execution_completed",
+    chat: { targetId: target.id, conversationId: "planner-conversation", temporary: true, personalized: true, reasoning: "high" }
+  } as PlannerTask;
+  const browser = new ChatGptBrowserController(config, fakeCdp);
+  await browser.sendReviewPrompt(task, "call submit_review");
+  await browser.sendPlanRevisionPrompt({ ...task, status: "awaiting_approval" }, "use Redis", 1);
+  assert.equal(events.includes("new"), false);
+  assert.deepEqual(events.slice(0, 4), ["connect:planner-target", "insert:review", "keyDown:Enter", "keyUp:Enter"]);
+  assert.equal(events.includes("insert:revision"), true);
+});
+
+test("review fails closed when original target is missing or conversation changed", async () => {
+  const config = { cdpHost: "127.0.0.1", cdpPort: 9222 } as PlannerConfig;
+  const task = {
+    id: "123e4567-e89b-12d3-a456-426614174000", request: "task", workspaceRoot: "/tmp",
+    createdAt: "", updatedAt: "", status: "execution_completed",
+    chat: { targetId: "planner-target", conversationId: "original", temporary: true, personalized: true, reasoning: "high" }
+  } as PlannerTask;
+  const missing = Object.assign(async () => { throw new Error("must not connect"); }, { List: async () => [] }) as any;
+  await assert.rejects(() => new ChatGptBrowserController(config, missing).sendReviewPrompt(task, "review"), /Original Temporary Chat is no longer available/);
+  const { conversationId: _conversationId, ...chatWithoutConversation } = task.chat!;
+  const unknownConversation: PlannerTask = { ...task, chat: chatWithoutConversation };
+  const tempTarget = Object.assign(async () => ({
+    Page: { enable: async () => undefined }, Runtime: { enable: async () => undefined, evaluate: async ({ expression }: { expression: string }) => expression === "location.href" ? { result: { value: "https://chatgpt.com/?temporary-chat=true" } } : { result: { value: expression.includes("contenteditable") ? true : "complete" } } }, Input: { insertText: async () => undefined, dispatchKeyEvent: async () => undefined }, close: async () => undefined
+  }), { List: async () => [{ id: "planner-target", url: "https://chatgpt.com/?temporary-chat=true" }] }) as any;
+  await new ChatGptBrowserController(config, tempTarget).sendReviewPrompt(unknownConversation, "review");
+
+});

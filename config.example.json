@@ -11,6 +11,8 @@
   "chatgptAppName": "Pi Workspace",
   "browserAutoAttachApp": true,
   "planTimeoutMs": 600000,
+  "maxReviewIterations": 3,
+  "reviewTimeoutMs": 600000,
   "maxReadLines": 500,
   "maxFileBytes": 1000000
 }
