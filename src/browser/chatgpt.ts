@@ -227,6 +227,43 @@ export class ChatGptBrowserController {
     }
   }
 
+  /** V2: send a review-control prompt into the EXACT existing planner target. Never creates a
+   *  target, never reruns Temporary/Personalized bootstrap. Fails closed if target vanished. */
+  async sendReviewPrompt(task: PlannerTask, prompt: string): Promise<void> {
+    const targetId = task.chat?.targetId;
+    if (!targetId) throw new Error("planner_target_unavailable: task has no stored targetId");
+    let target: { id?: string; url?: string } | undefined;
+    try {
+      const targets = (await this.cdp.List({ host: this.config.cdpHost, port: this.config.cdpPort })) as { id?: string; url?: string }[];
+      target = targets?.find((candidate) => candidate.id === targetId);
+    } catch {
+      target = undefined;
+    }
+    if (!target) throw new Error(`planner_target_unavailable: Original Temporary Chat is no longer available. This task cannot be reviewed by the same planner conversation. Create a new planning task if review is still required.`);
+    const client = await this.cdp({ host: this.config.cdpHost, port: this.config.cdpPort, target: targetId });
+    this.logDiagnostic(`Review CDP session attached to targetId: ${targetId}`);
+    try {
+      const { Page, Runtime, Input } = client;
+      await Promise.all([Page.enable(), Runtime.enable()]);
+      await this.logReadyState(Runtime);
+      const url = await Runtime.evaluate({ expression: "location.href", returnByValue: true });
+      const href = String(url.result.value ?? "");
+      let origin = "";
+      try { origin = new URL(href).origin; } catch { /* invalid URL fails below */ }
+      if (origin !== "https://chatgpt.com") {
+        throw new Error(`planner_target_unavailable: target ${targetId} is not a chatgpt.com page (${href.slice(0, 60)})`);
+      }
+      await this.waitForComposer(Runtime);
+      await this.focusComposer(Runtime);
+      await Input.insertText({ text: prompt });
+      await Input.dispatchKeyEvent({ type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+      await Input.dispatchKeyEvent({ type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+      this.logDiagnostic("Review prompt sent to original planner target");
+    } finally {
+      await client.close();
+    }
+  }
+
   private async logReadyState(Runtime: Awaited<ReturnType<typeof CDP>>["Runtime"]): Promise<void> {
     try {
       const result = await Runtime.evaluate({ expression: "document.readyState", returnByValue: true });

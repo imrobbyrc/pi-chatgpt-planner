@@ -39,3 +39,9 @@ Avoid attaching automation to the user's normal browser profile. Dia is default 
 Plan receipt never starts execution. User approves or rejects persisted task with `/chatgpt-plan-approve` or `/chatgpt-plan-reject`. Pi is sole executor; no automatic commit, push, deploy, review, or correction loop. V2 owns independent ChatGPT review.
 
 Execution completion is tied to Pi's documented `before_agent_start` and `agent_end` extension events. Dispatch alone leaves task `executing`; completion requires correlated prompt start followed by `agent_end`. If Pi restarts while executing, task remains persisted as `executing` and is not auto-resumed or duplicated; explicit recovery is required. Changed files come from local `git status`; command validation capture is unavailable through current extension event payloads and is left empty rather than fabricated.
+
+## ADR-009 — V2 review reuses original ChatGPT target
+
+V2 attaches only to persisted `task.chat.targetId` and verifies exact `chatgpt.com` origin. For Temporary Chat, targetId is authoritative; conversation identity metadata is optional. Missing or changed target fails closed. Review output returns only through MCP `submit_review`; browser response scraping remains forbidden.
+
+Corrections execute only through Pi's correlated executor. ChatGPT retains read-only workspace tools plus protocol-state writes (`submit_plan`, `submit_review`). Review/fix rounds stop at configured finite limit and never commit, push, or deploy.

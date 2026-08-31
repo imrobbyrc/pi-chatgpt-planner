@@ -24,7 +24,9 @@ const config: PlannerConfig = {
   tunnelBinary: "tunnel-client",
   tunnelProfile: "pi-planner",
   tunnelHealthPort: 8080,
-  tunnelStartupTimeoutMs: 120_000
+  tunnelStartupTimeoutMs: 120_000,
+  maxReviewIterations: 3,
+  reviewTimeoutMs: 600_000
 };
 
 test("Dia launch uses isolated profile and loopback CDP", () => {

@@ -4,7 +4,7 @@ Pi-native experiment that uses **ChatGPT Web as the planning/review brain** whil
 
 This repository is intentionally standalone. It does **not** depend on `codex-with-chatgpt`, does not call the OpenAI API for planning, and does not replace Pi's model provider.
 
-> **Current status: V0 proven end-to-end.** A real Dia/ChatGPT Web session has completed `/chatgpt-plan` through the OpenAI Secure MCP Tunnel: ChatGPT inspected the local workspace and returned a structured plan through `submit_plan`. No project source files were modified. V0 does not execute plans.
+> **Current status: V2 implemented.** V0 planning is proven end-to-end. V1 adds explicit approval and Pi-only execution. V1.1 manages local MCP, Secure MCP Tunnel, and dedicated Dia/CDP. V2 reuses the original ChatGPT conversation for independent diff review and bounded Pi correction rounds.
 
 ## The target UX
 
@@ -80,13 +80,16 @@ ChatGPT uses the custom **Pi Workspace** MCP app to inspect the actual repositor
 - `read_file`
 - `search_workspace`
 - `git_status`
-- `git_diff` (primarily for the later review loop)
+- `git_diff`
+- `review_context`
+- `test_status` (persisted Pi validation evidence; honestly reports unavailable evidence)
 
-The only protocol-side write in V0 is:
+Protocol-side writes are:
 
 - `submit_plan`
+- `submit_review`
 
-`submit_plan` writes planner task JSON under `~/.pi/chatgpt-planner/tasks/`. It **cannot edit source files, run shell commands, create commits, or mutate git**.
+Both write planner task JSON under `~/.pi/chatgpt-planner/tasks/`. `submit_review` stores only a structured `APPROVED` or `CHANGES_REQUESTED` verdict and findings. Neither tool can edit source files, run shell commands, create commits, or mutate git. `review_context` exposes original request, approved plan, execution summary, review history, and captured git evidence as read-only data.
 
 ## Why this shape
 
@@ -177,11 +180,15 @@ Set `PLANNER_BROWSER_BINARY` for a custom executable path.
 
 The project never reads or stores your ChatGPT password. It relies on the browser profile you authorized yourself.
 
+Before stopping owned infrastructure, Pi warns when unfinished review tasks exist: closing planner Dia makes their Temporary Chat review context unavailable. Shutdown is not blocked; owned resources are still cleaned up.
+
 Verify prerequisites:
 
 ```bash
 npm run doctor
 ```
+
+> **Troubleshooting:** `npm run doctor` checks Node, Git, Pi, and Browser/CDP reachability. If app attachment is unconfirmed, select `Pi Workspace` manually (see [Browser app attachment](#browser-app-attachment)). For review infrastructure failures, restart with `/chatgpt-planner-start`, then retry `/chatgpt-plan-review <task-id>` against the original ChatGPT target; do not rerun execution. Before retrying a failed or stalled review, use `/chatgpt-plan-status <task-id>` to inspect persisted V2 review state and iteration.
 
 ## 3. Connect local MCP to ChatGPT
 
@@ -268,12 +275,25 @@ Start a new external planning round-trip.
 
 Use a harmless docs-only task such as `/chatgpt-plan Add one tiny README note`, wait for the returned task id, then explicitly approve Pi-only execution:
 
+A harmless README-only change can exercise V2: after `execution_completed`, review reuses original `chat.targetId` and returns through MCP.
+
 ```text
 /chatgpt-plan-approve <task-id>
 /chatgpt-plan-status <task-id>
 ```
 
-Status should end at `execution_completed`. Approval does not automatically commit, push, deploy, or start review.
+After `execution_completed`, V2 automatically sends a review prompt to the exact original `chat.targetId`. ChatGPT reads actual workspace state and git diff through MCP, then calls `submit_review`. `APPROVED` ends the loop. `CHANGES_REQUESTED` dispatches one correlated Pi-only correction and re-reviews, up to configured iteration limit. No step commits, pushes, or deploys.
+
+If review fails because infrastructure, original target, or timeout is unavailable, restart infrastructure and retry without rerunning execution:
+
+```text
+/chatgpt-planner-start
+/chatgpt-plan-review <task-id>
+```
+
+Review fails closed when original ChatGPT target cannot be verified. For Temporary Chat, persisted `chat.targetId` is authoritative; conversation URL/id is optional metadata. It never creates a replacement review chat and never scrapes assistant prose.
+
+> **V2 review troubleshooting:** Keep original Pi-owned planner browser and Temporary Chat open through execution and review; V2 reuses persisted `chat.targetId`. Stopping planner infrastructure before review makes same-conversation review unavailable.
 
 ```text
 /chatgpt-plan-status [task-id]
@@ -318,6 +338,8 @@ Useful environment variables:
 | `PLANNER_BROWSER` | `dia` (`chrome` optional) |
 | `PLANNER_BROWSER_BINARY` | unset |
 | `PLANNER_BROWSER_PROFILE_DIR` | `~/.pi/chatgpt-planner/<browser>-profile` |
+| `PLANNER_MAX_REVIEW_ITERATIONS` | `3` |
+| `PLANNER_REVIEW_TIMEOUT_MS` | `600000` |
 | `PLANNER_BROWSER_STARTUP_TIMEOUT_MS` | `20000` |
 | `PLANNER_CDP_HOST` | `127.0.0.1` |
 | `PLANNER_CDP_PORT` | `9222` |
@@ -333,6 +355,8 @@ Useful environment variables:
 Each `/chatgpt-plan` creates a new CDP target at `https://chatgpt.com/`; it never attaches to or navigates the user's active ChatGPT tab. The new target id is persisted before setup. Controller confirms fresh state, Temporary Chat, Personalized mode, and High reasoning before attaching Pi Workspace and sending the existing task-id prompt. Any required confirmation failure aborts before sending. Resulting target id and conversation URL/id are persisted when exposed.
 
 Settings are confirmed through visible controls/selection state. Plan return remains `submit_plan`, never assistant DOM scraping.
+
+**Temporary Chat lifecycle:** `chat.targetId` is authoritative review identity, but it survives only while original Pi-owned Dia target remains alive. `/chatgpt-planner-stop` and `/quit` still close Pi-owned planner Dia as required. If shutdown happens before review finishes, task review is marked failed with `planner_target_closed`; same-conversation review cannot resume. No replacement reviewer conversation is created. Create a new planning task if review is still required.
 
 ## Browser app attachment
 
@@ -405,10 +429,10 @@ V0 does **not** yet implement OAuth/pairing on the MCP server. Therefore do not 
 ## Known limitations
 
 1. **ChatGPT settings UI:** Temporary/personalized/reasoning controls and app picker markup may change; warnings/manual selection remain fallback.
-2. **Conversation URL:** ChatGPT may delay or hide conversation id; task stores URL when exposed.
+2. **Conversation URL:** ChatGPT may delay or hide conversation id. Temporary Chat review uses persisted live `chat.targetId`; URL/id remain optional metadata.
 3. **MCP write availability:** some ChatGPT plans/workspaces may not permit `submit_plan`.
 4. **No OAuth/pairing yet:** V0 delegates remote authentication to OpenAI Secure MCP Tunnel.
-5. **No execution or review loop:** V0.1 intentionally stops after displaying the plan.
+5. **V2 review evidence:** Git status/diff and Pi execution summary are persisted. Pi extension events do not expose authoritative per-command test output, so validations remain empty unless supplied by executor.
 
 ## Development roadmap
 
@@ -417,7 +441,7 @@ See [`ROADMAP.md`](ROADMAP.md). In short:
 - **V0:** proven: `/chatgpt-plan -> Dia/CDP -> ChatGPT Web -> OpenAI Secure MCP Tunnel -> Pi Workspace MCP -> submit_plan -> Pi`.
 - **V0.1:** proven-session hardening: new personalized Temporary Chat, High reasoning, app attachment, identity capture, defensive warnings.
 - **V1:** confirmation gate then inject approved external plan into Pi for execution.
-- **V2:** ChatGPT review of real `git_diff` + `test_status`; Pi fix loop.
+- **V2:** ChatGPT review of real git status/diff plus persisted execution/test evidence; bounded Pi fix loop.
 - **V3:** optional `/feature --auto` orchestration with explicit safety limits.
 
 ## For Codex CLI / future agents

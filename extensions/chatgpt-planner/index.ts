@@ -25,8 +25,34 @@ export function executionLabel(task: PlannerTask): "not started" | "executing" |
   return "not started";
 }
 
+export function reviewLabel(task: PlannerTask): string {
+  const review = task.review;
+  if (!review) return "not started";
+  const labels: Record<string, string> = {
+    not_started: "not started", awaiting_review: "awaiting review", reviewing: "reviewing",
+    approved: "approved", changes_requested: "changes requested", correction_executing: "correction executing",
+    correction_completed: "correction complete", failed: "failed",
+    max_iterations_reached: "max iterations reached", scope_expansion_required: "scope expansion required"
+  };
+  return `${labels[review.status] ?? review.status} (iterations: ${review.iteration})`;
+}
+
 export function renderStatus(task: PlannerTask): string {
-  return `Planning: ${planningLabel(task)}\nApproval: ${approvalLabel(task)}\nExecution: ${executionLabel(task)}`;
+  return `Planning: ${planningLabel(task)}\nApproval: ${approvalLabel(task)}\nExecution: ${executionLabel(task)}\nReview: ${reviewLabel(task)}`;
+}
+
+function renderReview(task: PlannerTask): string {
+  const review = task.review;
+  if (!review) return "## Review\nNot started.";
+  const records = review.reviews.flatMap((record) => [
+    `### Iteration ${record.iteration}: ${record.status}`,
+    record.summary ?? record.error ?? "No summary.",
+    ...record.findings.map((finding) => `- [${finding.severity}]${finding.file ? ` ${finding.file}${finding.line ? `:${finding.line}` : ""}:` : ""} ${finding.issue}${finding.requested_change ? ` → ${finding.requested_change}` : ""}`)
+  ]);
+  const reason = review.error?.kind === "planner_target_closed"
+    ? "Reason: original Temporary Chat closed"
+    : review.error ? `Reason: ${review.error.kind} — ${review.error.message}` : "";
+  return ["## Review", reviewLabel(task), reason, ...records].filter(Boolean).join("\n");
 }
 
 function renderPlan(task: PlannerTask): string {
@@ -123,8 +149,37 @@ export default function chatGptPlannerExtension(pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       try {
         if (!runtime) { ctx.ui.notify("Pi ChatGPT Planner stopped", "info"); return; }
+        const pending = await runtime.pendingReviewTasks();
+        if (pending.length) ctx.ui.notify("Planner has unfinished review tasks. Closing planner browser will make their Temporary Chat review context unavailable.", "warning");
         const status = await runtime.stop();
         ctx.ui.notify(["Pi ChatGPT Planner stopped", `Tunnel: ${status.tunnel}`, `Dia CDP: ${status.dia}`, `MCP: ${status.mcp}`, `Planner: ${status.ready ? "running" : "stopped"}`].join("\n"), "info");
+      } catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"); }
+    }
+  });
+
+  pi.registerCommand("chatgpt-plan-review", {
+    description: "Retry review for an executed task in its original ChatGPT conversation",
+    handler: async (args, ctx) => {
+      try {
+        const id = args.trim();
+        if (!id) { ctx.ui.notify("Usage: /chatgpt-plan-review <task-id>", "warning"); return; }
+        const planner = await getRuntime();
+        const outcome = await planner.reviews.startReview(id);
+        const task = await planner.store.getTask(id);
+        ctx.ui.notify(`Review ${outcome}\n${task.review?.status ?? "no review"}`, "info");
+      } catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"); }
+    }
+  });
+
+  pi.registerCommand("chatgpt-plan-review-recover", {
+    description: "Recover legacy operational review attempts without changing source or semantic review count",
+    handler: async (args, ctx) => {
+      try {
+        const id = args.trim();
+        if (!id) { ctx.ui.notify("Usage: /chatgpt-plan-review-recover <task-id>", "warning"); return; }
+        const planner = await getRuntime();
+        const task = await planner.store.recoverOperationalReview(id);
+        ctx.ui.notify(`Review recovered: ${task.id}\nRetry with /chatgpt-plan-review ${task.id}`, "info");
       } catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"); }
     }
   });
@@ -229,7 +284,7 @@ export default function chatGptPlannerExtension(pi: ExtensionAPI) {
           return;
         }
         const details = task.plan
-          ? [renderStatus(task), "", renderPlan(task), task.execution ? `## Execution\n${task.execution.summary}\n\nValidations:\n${task.execution.validations.map((v) => `- ${v}`).join("\n") || "- None"}${task.execution.error ? `\n\nError: ${task.execution.error}` : ""}` : ""].join("\n")
+          ? [renderStatus(task), "", renderPlan(task), task.execution ? `## Execution\n${task.execution.summary}\n\nValidations:\n${task.execution.validations.map((v) => `- ${v}`).join("\n") || "- None"}${task.execution.error ? `\n\nError: ${task.execution.error}` : ""}` : "", "", renderReview(task)].join("\n")
           : `Task: ${task.id}\nStatus: ${task.status}\nRequest: ${task.request}\n${task.error ? `Error: ${task.error}` : ""}`;
         if (ctx.hasUI) await ctx.ui.editor(`Planner task ${task.id.slice(0, 8)}`, details);
         else ctx.ui.notify(`${task.id}: ${task.status}`, "info");
@@ -278,6 +333,7 @@ export default function chatGptPlannerExtension(pi: ExtensionAPI) {
   function ctxSafeStatus(): void { /* correlation hook intentionally has no UI side effects */ }
 
   pi.on("session_shutdown", async () => {
+    // No transcript UI is available here; runtime persists planner_target_closed before cleanup.
     await runtime?.stop();
     runtime = undefined;
   });

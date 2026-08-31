@@ -64,29 +64,18 @@ V1 starts only after V0.1 manual verification confirms session settings and iden
 - [x] Persist execution summary and test commands/results.
 - [x] No autonomous review loop yet.
 
-## V2 — independent ChatGPT review
+## V2 — independent ChatGPT review (implemented)
 
-Add read-only MCP tools/state:
-
-- [ ] `test_status`
-- [ ] `execution_summary`
-
-Add protocol write:
-
-- [ ] `submit_review`
-
-Flow:
-
-```text
-ChatGPT PLAN
-  -> Pi IMPLEMENT
-  -> Pi TEST
-  -> ChatGPT reads actual git_diff/test_status
-  -> APPROVED or CHANGES_REQUESTED
-  -> Pi FIX
-```
-
-Require a maximum review/fix iteration count.
+- [x] Reuse exact original ChatGPT `targetId`; never create replacement review chat.
+- [x] Add read-only `review_context` with original request, approved plan, execution summary, review history, and captured git evidence.
+- [x] Let ChatGPT inspect actual workspace via existing read-only `git_status`, `git_diff`, `read_file`, `search_workspace`, and `repo_map` tools.
+- [x] Add structured `submit_review` protocol write for `APPROVED` and `CHANGES_REQUESTED`.
+- [x] Dispatch corrections through Pi only with execution correlation.
+- [x] Persist review iterations, findings, failures, corrections, and scope-expansion stops.
+- [x] Bound review/fix loops (`3` iterations by default).
+- [x] Add `/chatgpt-plan-review <task-id>` for operational retry without rerunning implementation.
+- [x] Fail closed on missing original target, infrastructure failure, timeout, invalid submission, or scope expansion; operational failures remain retryable and do not consume semantic iterations.
+- [x] Preserve MCP trust boundary: no source writes, shell, git mutation, execution, commit, push, or deploy tools.
 
 ## V3 — optional `/feature --auto`
 

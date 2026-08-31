@@ -199,6 +199,71 @@ export function createPlannerMcpFactory(store: TaskStore, config: PlannerConfig)
       }
     );
 
+    server.registerTool(
+      "review_context",
+      {
+        title: "Review context",
+        description:
+          "Read-only review context for a task: request, approved plan, execution evidence, git before/after snapshots, review iteration, and previous findings. Never exposes credentials.",
+        inputSchema: z.object({ task_id: z.string().uuid() }),
+        annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
+      },
+      async ({ task_id }) => {
+        const task = await store.getTask(task_id);
+        return text({
+          task_id: task.id,
+          request: task.request,
+          plan: task.plan,
+          execution: task.execution,
+          review: task.review,
+          git_evidence: task.gitEvidence
+        });
+      }
+    );
+
+    server.registerTool(
+      "test_status",
+      {
+        title: "Test status",
+        description: "Read persisted Pi validation evidence for an executed task. Empty means Pi extension events supplied no authoritative test results; it never claims unobserved tests passed.",
+        inputSchema: z.object({ task_id: z.string().uuid() }),
+        annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
+      },
+      async ({ task_id }) => {
+        const task = await store.getTask(task_id);
+        return text({ task_id: task.id, validations: task.execution?.validations ?? [], evidence_available: (task.execution?.validations.length ?? 0) > 0 });
+      }
+    );
+
+    server.registerTool(
+      "submit_review",
+      {
+        title: "Submit review",
+        description:
+          "Submit the structured review verdict for one review iteration of an executed task. Writes only planner review state; never edits source files.",
+        inputSchema: z.object({
+          task_id: z.string().uuid(),
+          iteration: z.number().int().positive(),
+          status: z.enum(["APPROVED", "CHANGES_REQUESTED"]),
+          summary: z.string().min(1),
+          findings: z.array(z.object({
+            severity: z.enum(["blocking", "major", "minor"]),
+            file: z.string().optional(),
+            line: z.number().int().positive().optional(),
+            issue: z.string().min(1),
+            requested_change: z.string().optional(),
+            scope_expansion_required: z.boolean().default(false)
+          })).default([])
+        }),
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false }
+      },
+      async ({ task_id, iteration, status, summary, findings }) => {
+        const mapped: import("../types.js").ReviewFinding[] = findings.map((finding) => ({ severity: finding.severity, issue: finding.issue, ...(finding.file ? { file: finding.file } : {}), ...(finding.line ? { line: finding.line } : {}), ...(finding.requested_change ? { requested_change: finding.requested_change } : {}), ...(finding.scope_expansion_required ? { scopeExpansionRequired: true } : {}) }));
+        const task = await store.saveReviewResult(task_id, iteration, status === "APPROVED" ? "approved" : "changes_requested", summary, mapped);
+        return text({ ok: true, task_id: task.id, review_status: task.review?.status, iteration });
+      }
+    );
+
     return server;
   };
 }

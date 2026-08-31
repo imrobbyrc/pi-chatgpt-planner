@@ -38,6 +38,64 @@ export interface ExecutionResult {
   deviations: string[];
   remainingIssues: string[];
   error?: string;
+  round?: number; // V2: 0 = initial execution, n = correction round n
+}
+
+export interface GitEvidence {
+  capturedAt: string;
+  gitStatus: string;
+  gitDiff: string;
+  testStatus?: string;
+}
+
+export type ReviewSeverity = "blocking" | "major" | "minor";
+
+export interface ReviewFinding {
+  severity: ReviewSeverity;
+  file?: string;
+  line?: number;
+  issue: string;
+  requested_change?: string;
+  scopeExpansionRequired?: boolean;
+}
+
+export interface ReviewRecord {
+  iteration: number;
+  startedAt: string;
+  completedAt?: string;
+  status: "reviewing" | "approved" | "changes_requested" | "failed";
+  summary?: string;
+  findings: ReviewFinding[];
+  evidence?: GitEvidence;
+  correction?: ExecutionResult;
+  error?: string;
+}
+
+export type ReviewStatus =
+  | "not_started"
+  | "awaiting_review"
+  | "reviewing"
+  | "approved"
+  | "changes_requested"
+  | "correction_executing"
+  | "correction_completed"
+  | "failed"
+  | "max_iterations_reached"
+  | "scope_expansion_required";
+
+export interface ReviewError {
+  kind: "planner_target_unavailable" | "planner_target_closed" | "infrastructure_not_ready" | "review_timeout" | "browser_transport_failure" | "mcp_unavailable" | "interrupted_review" | "legacy_operational_failure_recovered" | "other";
+  message: string;
+  occurredAt: string;
+}
+
+export interface ReviewState {
+  status: ReviewStatus;
+  iteration: number; // compatibility/display: current semantic review iteration
+  semanticIteration?: number;
+  attempt?: number;
+  error?: ReviewError;
+  reviews: ReviewRecord[];
 }
 
 export interface PlannerTask {
@@ -50,6 +108,8 @@ export interface PlannerTask {
   chat?: ChatSessionMetadata;
   plan?: PlannerPlan;
   execution?: ExecutionResult;
+  review?: ReviewState;
+  gitEvidence?: { preExecution?: GitEvidence; postExecution?: GitEvidence };
   error?: string;
 }
 
@@ -60,4 +120,5 @@ export interface PlannerConfig {
   chatgptUrl: string; chatgptAppName: string; browserAutoAttachApp: boolean;
   planTimeoutMs: number; maxReadLines: number; maxFileBytes: number;
   tunnelBinary: string; tunnelProfile: string; tunnelHealthPort: number; tunnelStartupTimeoutMs: number;
+  maxReviewIterations: number; reviewTimeoutMs: number;
 }
