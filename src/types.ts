@@ -17,6 +17,27 @@ export interface ChatSessionMetadata {
   reasoning: "high" | "unknown";
 }
 
+export interface PlannerContext {
+  methods: string[];
+  skills: string[];
+}
+
+export interface PlanRevision {
+  revision: number;
+  feedback?: string;
+  plan: PlannerPlan;
+  targetId: string;
+  context?: PlannerContext;
+  createdAt: string;
+}
+
+export interface PlanRevisionState {
+  currentRevision: number;
+  revisions: PlanRevision[];
+  approvedRevision?: number;
+  approvedPlanFingerprint?: string;
+}
+
 export interface PlannerPlan {
   summary: string;
   planMarkdown: string;
@@ -26,6 +47,7 @@ export interface PlannerPlan {
   risks: string[];
   openQuestions: string[];
   submittedAt: string;
+  context?: PlannerContext;
 }
 
 export interface ExecutionResult {
@@ -104,9 +126,12 @@ export interface PlannerTask {
   updatedAt: string;
   workspaceRoot: string;
   request: string;
+  /** Snapshot of Pi extension method state at planning start. */
+  activeMethods?: string[];
   status: TaskStatus;
   chat?: ChatSessionMetadata;
   plan?: PlannerPlan;
+  planRevisions?: PlanRevisionState;
   execution?: ExecutionResult;
   review?: ReviewState;
   gitEvidence?: { preExecution?: GitEvidence; postExecution?: GitEvidence };

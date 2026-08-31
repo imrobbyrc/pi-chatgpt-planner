@@ -73,7 +73,7 @@ export class ReviewOrchestrator {
     const previous = iteration > 1 ? task.review?.reviews.at(-2) : undefined;
 
     try {
-      const message = reviewPromptFor(taskId, iteration, previous && previous.findings.length ? findingsSummary(previous.findings) : undefined);
+      const message = reviewPromptFor(taskId, iteration, previous && previous.findings.length ? findingsSummary(previous.findings) : undefined, task.plan?.context);
       await this.deps.browser.sendReviewPrompt(task, message); // same targetId
     } catch (error) {
       await store.failReview(taskId, error instanceof Error ? error.message : String(error));

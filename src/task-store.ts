@@ -1,7 +1,7 @@
 import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
-import type { ChatSessionMetadata, ExecutionResult, GitEvidence, PlannerPlan, PlannerTask, ReviewFinding, ReviewRecord, ReviewState, TaskStatus } from "./types.js";
+import type { ChatSessionMetadata, ExecutionResult, GitEvidence, PlanRevision, PlannerContext, PlannerPlan, PlannerTask, ReviewFinding, ReviewRecord, ReviewState, TaskStatus } from "./types.js";
 import { normalizeReviewState } from "./review-state.js";
 
 const transitions: Record<TaskStatus, readonly TaskStatus[]> = {
@@ -19,9 +19,9 @@ export class TaskStore {
   constructor(stateDir: string) { this.tasksDir = join(stateDir, "tasks"); }
   async init(): Promise<void> { await mkdir(this.tasksDir, { recursive: true }); }
 
-  async createTask(workspaceRoot: string, request: string): Promise<PlannerTask> {
+  async createTask(workspaceRoot: string, request: string, activeMethods: string[] = []): Promise<PlannerTask> {
     await this.init(); const now = new Date().toISOString();
-    const task: PlannerTask = { id: randomUUID(), createdAt: now, updatedAt: now, workspaceRoot, request, status: "planning" };
+    const task: PlannerTask = { id: randomUUID(), createdAt: now, updatedAt: now, workspaceRoot, request, ...(activeMethods.length ? { activeMethods } : {}), status: "planning" };
     await this.writeTask(task); return task;
   }
   async getTask(id: string): Promise<PlannerTask> { const raw = await readFile(this.pathFor(id), "utf8"); return JSON.parse(raw) as PlannerTask; }
@@ -36,9 +36,25 @@ export class TaskStore {
   async submitPlan(id: string, plan: Omit<PlannerPlan, "submittedAt">): Promise<PlannerTask> {
     return this.mutate(id, (task) => {
       if (task.status !== "planning") throw new Error(`Cannot submit plan from status ${task.status}`);
-      return { ...task, plan: { ...plan, submittedAt: new Date().toISOString() }, status: "plan_received" };
+      const complete = { ...plan, submittedAt: new Date().toISOString() };
+      const revision: PlanRevision = { revision: 1, plan: complete, targetId: task.chat?.targetId ?? "", ...(complete.context ? { context: complete.context } : {}), createdAt: complete.submittedAt };
+      return { ...task, plan: complete, planRevisions: { currentRevision: 1, revisions: [revision] }, status: "plan_received" };
     }).then((task) => this.transition(task.id, "awaiting_approval"));
   }
+  async submitPlanRevision(id: string, baseRevision: number, plan: Omit<PlannerPlan, "submittedAt">, feedback: string, context?: PlannerContext): Promise<PlannerTask> {
+    return this.mutate(id, (task) => {
+      if (!["plan_received", "awaiting_approval"].includes(task.status)) throw new Error("Plan revisions are only allowed before approval.");
+      const revisions = task.planRevisions ?? (task.plan && task.chat?.targetId ? { currentRevision: 1, revisions: [{ revision: 1, plan: task.plan, targetId: task.chat.targetId, ...(task.plan.context ? { context: task.plan.context } : {}), createdAt: task.plan.submittedAt }] } : undefined);
+      if (!revisions || revisions.currentRevision !== baseRevision) throw new Error(`Stale plan revision: expected ${revisions?.currentRevision ?? 1}, got ${baseRevision}`);
+      if (!task.chat?.targetId) throw new Error("Cannot revise plan without planner target identity");
+      const revision = revisions.currentRevision + 1;
+      const inheritedContext = context ?? task.plan?.context;
+      const complete = { ...plan, submittedAt: new Date().toISOString(), ...(inheritedContext ? { context: inheritedContext } : {}) };
+      const next: PlanRevision = { revision, plan: complete, targetId: task.chat.targetId, ...(inheritedContext ? { context: inheritedContext } : {}), createdAt: complete.submittedAt, feedback };
+      return { ...task, plan: complete, planRevisions: { ...revisions, currentRevision: revision, revisions: [...revisions.revisions, next] } };
+    });
+  }
+
   async transition(id: string, next: TaskStatus): Promise<PlannerTask> {
     return this.mutate(id, (task) => {
       if (!transitions[task.status].includes(next)) throw new Error(`Invalid task transition: ${task.status} -> ${next}`);
@@ -50,7 +66,10 @@ export class TaskStore {
       const task = await this.getTask(id);
       if (task.status !== "approved") return undefined;
       const startedAt = new Date().toISOString();
-      return this.writeUpdated({ ...task, status: "executing", execution: {
+      const revision = task.planRevisions?.currentRevision ?? 1;
+      const fingerprint = createHash("sha256").update(JSON.stringify(task.plan)).digest("hex");
+      const lockedRevision = task.planRevisions ? { planRevisions: { ...task.planRevisions, approvedRevision: revision, approvedPlanFingerprint: fingerprint } } : {};
+      return this.writeUpdated({ ...task, ...lockedRevision, status: "executing", execution: {
         status: "running", startedAt, completedAt: "", summary: "Pi agent execution running.",
         filesChanged: [], validations: [], deviations: [], remainingIssues: []
       } });

@@ -70,6 +70,20 @@ export class PlannerRuntime {
     }
   }
 
+  async adjustPlan(id: string, feedback: string): Promise<PlannerTask> {
+    const task = await this.store.getTask(id);
+    if (!["plan_received", "awaiting_approval"].includes(task.status)) throw new Error("Plan revisions are only allowed before approval. Create a follow-up planning task for additional scope.");
+    const baseRevision = task.planRevisions?.currentRevision ?? 1;
+    await this.browser.sendPlanRevisionPrompt(task, feedback, baseRevision);
+    const deadline = Date.now() + this.config.planTimeoutMs;
+    while (Date.now() < deadline) {
+      const current = await this.store.getTask(id);
+      if ((current.planRevisions?.currentRevision ?? 1) > baseRevision) return current;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    throw new Error(`Timed out waiting for plan revision ${baseRevision + 1}.`);
+  }
+
   async rejectTask(id: string): Promise<PlannerTask> {
     const current = await this.store.getTask(id);
     if (current.status === "rejected") return current;
@@ -134,12 +148,12 @@ export class PlannerRuntime {
     }
   }
 
-  async createAndSendTask(workspaceRoot: string, request: string): Promise<{
+  async createAndSendTask(workspaceRoot: string, request: string, activeMethods: string[] = []): Promise<{
     task: PlannerTask;
     browser: BrowserSendResult;
   }> {
     await this.start();
-    const task = await this.store.createTask(workspaceRoot, request);
+    const task = await this.store.createTask(workspaceRoot, request, activeMethods);
     try {
       const browser = await this.browser.sendPlanningRequest(task, async (targetId) => {
         // Persist target identity before any page setup or prompt submission.

@@ -77,6 +77,16 @@ V1 starts only after V0.1 manual verification confirms session settings and iden
 - [x] Fail closed on missing original target, infrastructure failure, timeout, invalid submission, or scope expansion; operational failures remain retryable and do not consume semantic iterations.
 - [x] Preserve MCP trust boundary: no source writes, shell, git mutation, execution, commit, push, or deploy tools.
 
+## V2.1 — interactive planning UX (implemented)
+
+- [x] Session current-task resolver with full UUID/unique-prefix support and concise task list.
+- [x] Optional task IDs for status, approval, rejection, review, recovery, and adjustment.
+- [x] Same-target plan adjustments with complete revision history and stale-base rejection.
+- [x] Approved revision locking for executor/reviewer contract.
+- [x] Read-only generic Pi skill/method metadata/content bridge.
+- [x] Active methods remain Pi/user-controlled; selected context reaches planning, execution, and review.
+- [x] Temporary Chat lifecycle limitation documented and preserved.
+
 ## V3 — optional `/feature --auto`
 
 - [ ] Compose plan, execute, review, and bounded fix loop.

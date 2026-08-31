@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { PiMessageExecutor } from "../src/executor.js";
+import { PiMessageExecutor, executionInstruction, reviewPromptFor } from "../src/executor.js";
 
 test("dispatch does not resolve until correlated agent end", async () => {
   let sent = "";
@@ -28,4 +28,10 @@ test("correction preserves scope-expansion signal from agent summary", async () 
   await executor.complete([{ content: "Could not fix safely.\nscope: requires unrelated schema migration" }]);
   const result = await promise;
   assert.match(result.remainingIssues[0] ?? "", /^scope:/);
+});
+
+test("approved planner context reaches execution and review contracts", () => {
+  const input = { taskId: "123e4567-e89b-12d3-a456-426614174000", request: "x", workspaceRoot: "/tmp", instructions: "x", plan: { summary: "x", planMarkdown: "x", filesToInspect: [], acceptanceCriteria: [], tests: [], risks: [], openQuestions: [], submittedAt: "", context: { methods: ["design-thinking"], skills: ["testing"] } } };
+  assert.match(executionInstruction(input), /design-thinking/);
+  assert.match(reviewPromptFor(input.taskId, 1, undefined, input.plan.context), /testing/);
 });

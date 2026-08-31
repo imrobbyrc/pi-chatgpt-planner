@@ -115,7 +115,7 @@ test("review reuses exact stored target and never creates a new target", async (
       Page: { enable: async () => undefined },
       Runtime: { enable: async () => undefined, evaluate },
       Input: {
-        insertText: async ({ text }: { text: string }) => events.push(`insert:${text.includes("submit_review")}`),
+        insertText: async ({ text }: { text: string }) => events.push(`insert:${text.includes("submit_review") ? "review" : text.includes("submit_plan_revision") ? "revision" : "other"}`),
         dispatchKeyEvent: async ({ type, key }: { type: string; key: string }) => events.push(`${type}:${key}`)
       },
       close: async () => events.push("close")
@@ -130,9 +130,12 @@ test("review reuses exact stored target and never creates a new target", async (
     createdAt: "", updatedAt: "", status: "execution_completed",
     chat: { targetId: target.id, conversationId: "planner-conversation", temporary: true, personalized: true, reasoning: "high" }
   } as PlannerTask;
-  await new ChatGptBrowserController(config, fakeCdp).sendReviewPrompt(task, "call submit_review");
+  const browser = new ChatGptBrowserController(config, fakeCdp);
+  await browser.sendReviewPrompt(task, "call submit_review");
+  await browser.sendPlanRevisionPrompt({ ...task, status: "awaiting_approval" }, "use Redis", 1);
   assert.equal(events.includes("new"), false);
-  assert.deepEqual(events.slice(0, 2), ["connect:planner-target", "insert:true"]);
+  assert.deepEqual(events.slice(0, 4), ["connect:planner-target", "insert:review", "keyDown:Enter", "keyUp:Enter"]);
+  assert.equal(events.includes("insert:revision"), true);
 });
 
 test("review fails closed when original target is missing or conversation changed", async () => {

@@ -29,6 +29,7 @@ export function executionInstruction(input: PlannerExecutorInput): string {
       `Original request:\n${input.request}`,
       "",
       `Approved plan:\n${input.plan.planMarkdown}`,
+      input.plan.context ? `Approved planner context:\nMethods: ${input.plan.context.methods.join(", ") || "none"}\nSkills: ${input.plan.context.skills.join(", ") || "none"}` : "",
       "",
       input.instructions,
       "",
@@ -39,7 +40,8 @@ export function executionInstruction(input: PlannerExecutorInput): string {
       `Prefix items that would exceed approved scope with "${SCOPE_PREFIX}" so Pi can surface them for an explicit user decision.`
     ].join("\n");
   }
-  return `Implement approved plan for task ${input.taskId}.\n\nStay within approved scope. You may edit files and run local commands/tests required to implement and validate plan. Do not commit, push, deploy, publish, or modify unrelated files. If plan cannot be followed exactly, make smallest safe deviation and report it.\n\nOriginal request:\n${input.request}\n\nApproved plan:\n${input.plan.planMarkdown}\n\nProject instructions:\n${input.instructions}\n\nAt completion return implementation summary, files changed, validations/tests run, validation results, deviations, and remaining issues/errors.`;
+  const context = input.plan.context ? `\n\nApproved planner context:\nMethods: ${input.plan.context.methods.join(", ") || "none"}\nSkills: ${input.plan.context.skills.join(", ") || "none"}` : "";
+  return `Implement approved plan for task ${input.taskId}.${context}\n\nStay within approved scope. You may edit files and run local commands/tests required to implement and validate plan. Do not commit, push, deploy, publish, or modify unrelated files. If plan cannot be followed exactly, make smallest safe deviation and report it.\n\nOriginal request:\n${input.request}\n\nApproved plan:\n${input.plan.planMarkdown}\n\nProject instructions:\n${input.instructions}\n\nAt completion return implementation summary, files changed, validations/tests run, validation results, deviations, and remaining issues/errors.`;
 }
 
 export function findingsSummary(findings: ReviewFinding[]): string {
@@ -48,9 +50,10 @@ export function findingsSummary(findings: ReviewFinding[]): string {
     .join("\n");
 }
 
-export function reviewPromptFor(taskId: string, iteration: number, previousFindings?: string): string {
+export function reviewPromptFor(taskId: string, iteration: number, previousFindings?: string, context?: { methods: string[]; skills: string[] }): string {
   const previous = previousFindings ? `\nPi has addressed your previous review findings (round ${iteration - 1}):\n${previousFindings}\n` : "";
-  return `You planned task ${taskId} earlier. Pi has now executed the approved plan.\n\nReview the implementation using Pi Workspace. First call review_context for the exact task ${taskId}. Then inspect the actual workspace using git_status, git_diff, read_file, search_workspace, or repo_map as needed.\n\nCompare the implementation against: the original request, your approved plan, actual changed files, and execution evidence.\n\nDo not modify source. Do not expand the original scope. Ignore unrelated pre-existing workspace changes identified by review_context.\n\nSubmit exactly one structured review using submit_review for task ${taskId}, iteration ${iteration}.${previous}\nUse APPROVED only when the implementation satisfies the approved scope and has no concrete blocking correctness issue. Use CHANGES_REQUESTED when concrete changes are required. For every requested change provide specific evidence and an actionable fix. Set scope_expansion_required=true when a finding cannot be fixed without exceeding the original approved request/plan scope; Pi will stop for user action instead of expanding scope.`;
+  const approvedContext = context ? `\nApproved planner context for this review contract:\nMethods: ${context.methods.join(", ") || "none"}\nSkills: ${context.skills.join(", ") || "none"}\nEvaluate against this context; do not use later active state.` : "";
+  return `You planned task ${taskId} earlier. Pi has now executed the approved plan.${approvedContext}\n\nReview the implementation using Pi Workspace. First call review_context for the exact task ${taskId}. Then inspect the actual workspace using git_status, git_diff, read_file, search_workspace, or repo_map as needed.\n\nCompare the implementation against: the original request, your approved plan, actual changed files, and execution evidence.\n\nDo not modify source. Do not expand the original scope. Ignore unrelated pre-existing workspace changes identified by review_context.\n\nSubmit exactly one structured review using submit_review for task ${taskId}, iteration ${iteration}.${previous}\nUse APPROVED only when the implementation satisfies the approved scope and has no concrete blocking correctness issue. Use CHANGES_REQUESTED when concrete changes are required. For every requested change provide specific evidence and an actionable fix. Set scope_expansion_required=true when a finding cannot be fixed without exceeding the original approved request/plan scope; Pi will stop for user action instead of expanding scope.`;
 }
 
 export class PiMessageExecutor implements PlannerExecutor {

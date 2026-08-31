@@ -45,3 +45,7 @@ Execution completion is tied to Pi's documented `before_agent_start` and `agent_
 V2 attaches only to persisted `task.chat.targetId` and verifies exact `chatgpt.com` origin. For Temporary Chat, targetId is authoritative; conversation identity metadata is optional. Missing or changed target fails closed. Review output returns only through MCP `submit_review`; browser response scraping remains forbidden.
 
 Corrections execute only through Pi's correlated executor. ChatGPT retains read-only workspace tools plus protocol-state writes (`submit_plan`, `submit_review`). Review/fix rounds stop at configured finite limit and never commit, push, or deploy.
+
+## ADR-010 — V2.1 current task and revision contract
+
+Current task is session-only UX state; persisted task lifecycle remains source of truth. Explicit UUID/prefix wins, and ambiguous candidates fail closed. Pre-approval adjustments reuse original ChatGPT target and append complete revisions. Approval locks exact revision and context for execution/review. Pi-controlled active methods and selected skills are exposed through bounded read-only MCP discovery; ChatGPT cannot activate methods or write workspace.

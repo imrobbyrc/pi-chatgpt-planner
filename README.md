@@ -263,6 +263,23 @@ The command does the following:
 
 No Pi implementation model is invoked by `/chatgpt-plan` in V0.
 
+## V2.1 interactive planning flow
+
+Normal flow keeps current planner task in this Pi session; task IDs are optional:
+
+```text
+/chatgpt-plan "implement feature X"
+/chatgpt-plan-adjust "use Redis instead of in-memory cache"
+/chatgpt-plan-approve
+/chatgpt-plan-status
+```
+
+Use `/chatgpt-plan-list` to inspect recent tasks and choose current task. Commands accept full UUIDs or unique prefixes when needed: `/chatgpt-plan-status 2e87b64a`. Ambiguous or invalid prefixes fail clearly; Pi never silently approves/rejects one of multiple candidates. Current task is session-only and is not restored blindly after Pi restart.
+
+Plan adjustment reuses exact original planner `targetId`, stores complete immutable revision history, validates `base_revision`, and is blocked after approval. The approved revision is the executor and reviewer contract; later scope requires a new planning task.
+
+Pi skills are reusable domain/procedure knowledge. Methods control workflow (for example Design Thinking). MCP exposes read-only metadata/content discovery; active methods are controlled by Pi/user state and ChatGPT cannot activate them. Each planner task uses the Pi planning method active when that task starts; ChatGPT receives only that task-scoped active-method context and cannot activate or change methods. Only selected context is persisted with each plan revision and carried to Pi execution and same-target review.
+
 ## Useful Pi commands
 
 ```text
@@ -278,8 +295,8 @@ Use a harmless docs-only task such as `/chatgpt-plan Add one tiny README note`, 
 A harmless README-only change can exercise V2: after `execution_completed`, review reuses original `chat.targetId` and returns through MCP.
 
 ```text
-/chatgpt-plan-approve <task-id>
-/chatgpt-plan-status <task-id>
+/chatgpt-plan-approve
+/chatgpt-plan-status
 ```
 
 After `execution_completed`, V2 automatically sends a review prompt to the exact original `chat.targetId`. ChatGPT reads actual workspace state and git diff through MCP, then calls `submit_review`. `APPROVED` ends the loop. `CHANGES_REQUESTED` dispatches one correlated Pi-only correction and re-reviews, up to configured iteration limit. No step commits, pushes, or deploys.
@@ -288,7 +305,7 @@ If review fails because infrastructure, original target, or timeout is unavailab
 
 ```text
 /chatgpt-planner-start
-/chatgpt-plan-review <task-id>
+/chatgpt-plan-review [task-id]
 ```
 
 Review fails closed when original ChatGPT target cannot be verified. For Temporary Chat, persisted `chat.targetId` is authoritative; conversation URL/id is optional metadata. It never creates a replacement review chat and never scrapes assistant prose.
@@ -299,7 +316,9 @@ Review fails closed when original ChatGPT target cannot be verified. For Tempora
 /chatgpt-plan-status [task-id]
 ```
 
-Show a task. With no id, shows the newest task.
+Without an ID, status uses session current task; after restart it requires an unambiguous valid candidate and never blindly picks newest.
+
+Show current task. Optional full UUID or unique prefix overrides current task. `/chatgpt-plan-list` shows recent tasks and supports selection.
 
 ```text
 /chatgpt-planner-info

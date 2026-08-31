@@ -98,6 +98,9 @@ function plannerPrompt(task: PlannerTask, appName: string): string {
     "",
     `Use the \"${appName}\" MCP app and inspect the real workspace before proposing a plan.`,
     `Every workspace tool call must use task_id: ${task.id}`,
+    "Before finalizing, call list_active_methods and list_agent_skills; fetch only relevant active method/skill content with get_method_context/get_agent_skill.",
+    "Active methods are controlled by Pi/user state; do not activate or change them.",
+    "Include only relevant context names in submit_plan.context (methods and skills).",
     "Do not write source code and do not ask Pi to trust an uninspected plan.",
     "Inspect enough relevant files to understand the existing architecture, conventions, tests, and constraints.",
     "When the plan is complete, call submit_plan with a concise summary, detailed plan_markdown, files_to_inspect, acceptance_criteria, tests, risks, and open_questions.",
@@ -229,7 +232,18 @@ export class ChatGptBrowserController {
 
   /** V2: send a review-control prompt into the EXACT existing planner target. Never creates a
    *  target, never reruns Temporary/Personalized bootstrap. Fails closed if target vanished. */
+  async sendPlanRevisionPrompt(task: PlannerTask, feedback: string, baseRevision: number): Promise<void> {
+    const targetId = task.chat?.targetId;
+    if (!targetId) throw new Error("planner_target_unavailable: task has no stored targetId");
+    const prompt = `[PI-PLAN-REVISION:${task.id}]\n\nRevise existing plan for task ${task.id}. This is revision ${baseRevision + 1}, based on current revision ${baseRevision}.\nUser feedback:\n${feedback}\n\nUse Pi Workspace read-only tools if needed. Do not create a new plan task or conversation. Submit complete revised plan through submit_plan_revision with task_id ${task.id}, base_revision ${baseRevision}, and the full plan. Preserve applicable method/skill context unless user explicitly changed it.`;
+    await this.sendToExistingTarget(task, prompt);
+  }
+
   async sendReviewPrompt(task: PlannerTask, prompt: string): Promise<void> {
+    await this.sendToExistingTarget(task, prompt);
+  }
+
+  private async sendToExistingTarget(task: PlannerTask, prompt: string): Promise<void> {
     const targetId = task.chat?.targetId;
     if (!targetId) throw new Error("planner_target_unavailable: task has no stored targetId");
     let target: { id?: string; url?: string } | undefined;

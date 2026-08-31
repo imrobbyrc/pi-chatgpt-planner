@@ -4,6 +4,9 @@ import { PlannerRuntime } from "../../src/service/runtime.js";
 import { clearCredential, resolveCredential, storeCredential } from "../../src/service/auth.js";
 import type { PlannerTask } from "../../src/types.js";
 import { PiMessageExecutor } from "../../src/executor.js";
+import { TaskResolver, taskShortId, taskTitle, type TaskCommand } from "../../src/task-resolver.js";
+import { activeMethodNamesFromSession } from "../../src/skills.js";
+import { parseAdjustment, parseFreeForm } from "../../src/command-parser.js";
 
 export function planningLabel(task: PlannerTask): "complete" | "failed" | "in progress" {
   if (task.status === "planning") return "in progress";
@@ -37,6 +40,13 @@ export function reviewLabel(task: PlannerTask): string {
   return `${labels[review.status] ?? review.status} (iterations: ${review.iteration})`;
 }
 
+function presentationState(task: PlannerTask): string {
+  if (task.status === "awaiting_approval" || task.status === "plan_received") return "WAITING APPROVAL";
+  if (task.status === "execution_completed" && task.review?.status === "approved") return "APPROVED";
+  if (task.status === "execution_completed" && task.review?.status === "failed") return "NEEDS RECOVERY";
+  return task.status.replaceAll("_", " ").toUpperCase();
+}
+
 export function renderStatus(task: PlannerTask): string {
   return `Planning: ${planningLabel(task)}\nApproval: ${approvalLabel(task)}\nExecution: ${executionLabel(task)}\nReview: ${reviewLabel(task)}`;
 }
@@ -59,8 +69,13 @@ function renderPlan(task: PlannerTask): string {
   const plan = task.plan;
   if (!plan) return "No plan available.";
 
+  const revision = task.planRevisions?.currentRevision;
+  const approved = task.planRevisions?.approvedRevision;
   const sections = [
     `# ${plan.summary}`,
+    revision ? `Plan revision: ${revision}${approved === revision ? " (approved)" : ""}` : "",
+    plan.context?.methods.length ? `Methods: ${plan.context.methods.join(", ")}` : "",
+    plan.context?.skills.length ? `Skills: ${plan.context.skills.join(", ")}` : "",
     "",
     plan.planMarkdown.trim(),
     "",
@@ -81,6 +96,20 @@ function renderPlan(task: PlannerTask): string {
 
 export default function chatGptPlannerExtension(pi: ExtensionAPI) {
   let runtime: PlannerRuntime | undefined;
+  let currentTaskId: string | undefined;
+
+  async function resolveTask(planner: PlannerRuntime, command: TaskCommand, explicitId?: string): Promise<PlannerTask> {
+    const resolver = new TaskResolver(planner.store);
+    if (currentTaskId) resolver.setCurrent(currentTaskId);
+    const task = await resolver.resolve(command, explicitId);
+    currentTaskId = task.id;
+    return task;
+  }
+
+  function splitOptionalId(args: string): { id?: string; rest: string } {
+    const parsed = parseAdjustment(args);
+    return parsed.id ? { id: parsed.id, rest: parsed.feedback } : { rest: parsed.feedback };
+  }
 
   function tunnelLabel(state: string, tunnel: { managedByPi: boolean; lastError: string | undefined }): string {
     if (state !== "ready") return tunnel.lastError && state === "failed" ? `failed (${tunnel.lastError})` : state;
@@ -161,25 +190,56 @@ export default function chatGptPlannerExtension(pi: ExtensionAPI) {
     description: "Retry review for an executed task in its original ChatGPT conversation",
     handler: async (args, ctx) => {
       try {
-        const id = args.trim();
-        if (!id) { ctx.ui.notify("Usage: /chatgpt-plan-review <task-id>", "warning"); return; }
         const planner = await getRuntime();
-        const outcome = await planner.reviews.startReview(id);
-        const task = await planner.store.getTask(id);
-        ctx.ui.notify(`Review ${outcome}\n${task.review?.status ?? "no review"}`, "info");
+        const { id } = splitOptionalId(args);
+        const task = await resolveTask(planner, "review", id);
+        const outcome = await planner.reviews.startReview(task.id);
+        const finalTask = await planner.store.getTask(task.id);
+        ctx.ui.notify(`Review ${outcome}\n${finalTask.review?.status ?? "no review"}`, "info");
       } catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"); }
     }
   });
 
-  pi.registerCommand("chatgpt-plan-review-recover", {
+  pi.registerCommand("chatgpt-plan-recover", {
     description: "Recover legacy operational review attempts without changing source or semantic review count",
     handler: async (args, ctx) => {
       try {
-        const id = args.trim();
-        if (!id) { ctx.ui.notify("Usage: /chatgpt-plan-review-recover <task-id>", "warning"); return; }
         const planner = await getRuntime();
-        const task = await planner.store.recoverOperationalReview(id);
-        ctx.ui.notify(`Review recovered: ${task.id}\nRetry with /chatgpt-plan-review ${task.id}`, "info");
+        const { id } = splitOptionalId(args);
+        const selected = await resolveTask(planner, "recover", id);
+        const outcome = await planner.reviews.startReview(selected.id);
+        const task = await planner.store.getTask(selected.id);
+        ctx.ui.notify(`Review recovery: ${outcome}\n${taskShortId(task)} ${task.review?.status ?? "unknown"}`, "info");
+      } catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"); }
+    }
+  });
+
+  pi.registerCommand("chatgpt-plan-adjust", {
+    description: "Request a complete plan revision before approval",
+    handler: async (args, ctx) => {
+      try {
+        const planner = await getRuntime();
+        const { id, rest } = splitOptionalId(args);
+        if (!rest) { ctx.ui.notify("Usage: /chatgpt-plan-adjust [task-id] <feedback>", "warning"); return; }
+        const task = await resolveTask(planner, "adjust", id);
+        const updated = await planner.adjustPlan(task.id, rest);
+        currentTaskId = updated.id;
+        ctx.ui.notify(`ChatGPT revised the plan.\nTask: ${taskShortId(updated)}\nPlan revision: ${updated.planRevisions?.currentRevision ?? 1}\nApproval: awaiting approval\n\nNext: /chatgpt-plan-approve`, "info");
+      } catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"); }
+    }
+  });
+
+  pi.registerCommand("chatgpt-plan-list", {
+    description: "List recent planner tasks",
+    handler: async (_args, ctx) => {
+      try {
+        const planner = await getRuntime();
+        const tasks = await planner.store.listTasks();
+        const lines = tasks.slice(0, 15).map((task) => `${taskShortId(task)}  ${presentationState(task).padEnd(20)} ${taskTitle(task)}`);
+        const picked = ctx.hasUI && lines.length > 1 ? await ctx.ui.select("Select planner task", lines) : undefined;
+        if (picked) { const selected = tasks[lines.indexOf(picked)]!; currentTaskId = selected.id; ctx.ui.notify(`Current planner task: ${taskShortId(selected)}`, "info"); }
+        else if (ctx.hasUI) await ctx.ui.editor("Recent planner tasks", ["Recent planner tasks", "", ...lines].join("\n"));
+        else ctx.ui.notify(["Recent planner tasks", ...lines].join("\n"), "info");
       } catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"); }
     }
   });
@@ -187,7 +247,7 @@ export default function chatGptPlannerExtension(pi: ExtensionAPI) {
   pi.registerCommand("chatgpt-plan", {
     description: "Ask ChatGPT Web to inspect this workspace via MCP and return a plan",
     handler: async (args, ctx) => {
-      const request = args.trim();
+      const request = parseFreeForm(args);
       if (!request) {
         ctx.ui.notify("Usage: /chatgpt-plan <task>", "warning");
         return;
@@ -207,7 +267,9 @@ export default function chatGptPlannerExtension(pi: ExtensionAPI) {
       ctx.ui.setStatus("chatgpt-planner", "Preparing ChatGPT planner…");
 
       try {
-        const { task, browser } = await planner.createAndSendTask(ctx.cwd, request);
+        const activeMethods = activeMethodNamesFromSession(ctx.sessionManager.getBranch());
+        const { task, browser } = await planner.createAndSendTask(ctx.cwd, request, activeMethods);
+        currentTaskId = task.id;
         ctx.ui.setStatus("chatgpt-planner", `Waiting for ChatGPT plan (${task.id.slice(0, 8)})…`);
         for (const warning of browser.warnings) {
           ctx.ui.notify(warning, "warning");
@@ -218,7 +280,7 @@ export default function chatGptPlannerExtension(pi: ExtensionAPI) {
         ctx.ui.setStatus("chatgpt-planner", undefined);
         ctx.ui.setWidget("chatgpt-planner", [
           `✓ ChatGPT plan received: ${completed.plan?.summary ?? task.id}`,
-          `Task ${task.id.slice(0, 8)} · use /chatgpt-plan-status ${task.id} to reopen`
+          `Task ${task.id.slice(0, 8)} · use /chatgpt-plan-status to reopen`
         ]);
         ctx.ui.notify("ChatGPT planning round-trip completed.", "info");
         if (ctx.hasUI) {
@@ -235,10 +297,10 @@ export default function chatGptPlannerExtension(pi: ExtensionAPI) {
     description: "Approve a received ChatGPT plan and execute it in Pi",
     handler: async (args, ctx) => {
       try {
-        const id = args.trim();
-        if (!id) { ctx.ui.notify("Usage: /chatgpt-plan-approve <task-id>", "warning"); return; }
         const planner = await getRuntime();
-        const task = await planner.approveTask(id, new PiMessageExecutor((message) => pi.sendUserMessage(message)));
+        const { id } = splitOptionalId(args);
+        const selected = await resolveTask(planner, "approve", id);
+        const task = await planner.approveTask(selected.id, new PiMessageExecutor((message) => pi.sendUserMessage(message)));
         ctx.ui.notify(`${task.id}: ${task.status}`, "info");
       } catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"); }
     }
@@ -248,9 +310,10 @@ export default function chatGptPlannerExtension(pi: ExtensionAPI) {
     description: "Reject a received ChatGPT plan",
     handler: async (args, ctx) => {
       try {
-        const id = args.trim();
-        if (!id) { ctx.ui.notify("Usage: /chatgpt-plan-reject <task-id>", "warning"); return; }
-        const task = await (await getRuntime()).rejectTask(id);
+        const planner = await getRuntime();
+        const { id } = splitOptionalId(args);
+        const selected = await resolveTask(planner, "reject", id);
+        const task = await planner.rejectTask(selected.id);
         ctx.ui.notify(`${task.id}: ${task.status}`, "info");
       } catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"); }
     }
@@ -275,10 +338,8 @@ export default function chatGptPlannerExtension(pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       try {
         const planner = await getRuntime();
-        const id = args.trim();
-        const task = id
-          ? await planner.store.getTask(id)
-          : (await planner.store.listTasks())[0];
+        const { id } = splitOptionalId(args);
+        const task = await resolveTask(planner, "status", id);
         if (!task) {
           ctx.ui.notify("No planner tasks found.", "warning");
           return;
