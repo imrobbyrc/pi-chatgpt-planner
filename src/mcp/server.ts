@@ -8,6 +8,7 @@ import { gitBranch, gitDiff, gitStatus } from "../workspace/git.js";
 import { listDirectory, readTextFile, repoMap } from "../workspace/files.js";
 import { searchWorkspace } from "../workspace/search.js";
 import { getAgentSkill, listActiveMethods, listAgentSkills } from "../skills.js";
+import { validateHerdrContract } from "../herdr-contract.js";
 
 function text(value: unknown) {
   return { content: [{ type: "text" as const, text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }] };
@@ -39,7 +40,7 @@ export function createPlannerMcpFactory(store: TaskStore, config: PlannerConfig)
           workspace_root: task.workspaceRoot,
           git_branch: branch,
           status: task.status,
-          capabilities: ["submit_plan", "submit_plan_revision", "review_context", "submit_review", "test_status", "list_agent_skills", "get_agent_skill", "list_active_methods", "get_method_context"]
+          capabilities: ["submit_plan", "submit_plan_revision", "review_context", "execution_summary", "submit_review", "test_status", "list_agent_skills", "get_agent_skill", "list_active_methods", "get_method_context"]
         });
       }
     );
@@ -223,7 +224,8 @@ export function createPlannerMcpFactory(store: TaskStore, config: PlannerConfig)
           tests: z.array(z.string()).default([]),
           risks: z.array(z.string()).default([]),
           open_questions: z.array(z.string()).default([]),
-          context: z.object({ methods: z.array(z.string()).default([]), skills: z.array(z.string()).default([]) }).optional()
+          context: z.object({ methods: z.array(z.string()).default([]), skills: z.array(z.string()).default([]) }).optional(),
+          execution: z.object({ mode: z.literal("herdr"), worker_model: z.literal("luna-max"), workers: z.array(z.object({ id: z.string().min(1), objective: z.string().min(1), owns: z.array(z.string().min(1)).min(1), depends_on: z.array(z.string()) })) }).optional()
         }),
         annotations: {
           readOnlyHint: false,
@@ -241,8 +243,11 @@ export function createPlannerMcpFactory(store: TaskStore, config: PlannerConfig)
         tests,
         risks,
         open_questions,
-        context
+        context,
+        execution
       }) => {
+        const executionContract = execution ? { mode: execution.mode, workerModel: execution.worker_model, workers: execution.workers.map((worker) => ({ id: worker.id, objective: worker.objective, owns: worker.owns, dependsOn: worker.depends_on })) } : undefined;
+        if (executionContract) validateHerdrContract(executionContract);
         const task = await store.submitPlan(task_id, {
           summary,
           planMarkdown: plan_markdown,
@@ -251,7 +256,8 @@ export function createPlannerMcpFactory(store: TaskStore, config: PlannerConfig)
           tests,
           risks,
           openQuestions: open_questions,
-          ...(context ? { context } : {})
+          ...(context ? { context } : {}),
+          ...(executionContract ? { execution: executionContract } : {})
         });
         return text({ ok: true, task_id: task.id, status: task.status });
       }
@@ -266,12 +272,15 @@ export function createPlannerMcpFactory(store: TaskStore, config: PlannerConfig)
           task_id: z.string().uuid(), base_revision: z.number().int().positive(), feedback: z.string().min(1),
           summary: z.string().min(1), plan_markdown: z.string().min(1), files_to_inspect: z.array(z.string()).default([]),
           acceptance_criteria: z.array(z.string()).default([]), tests: z.array(z.string()).default([]), risks: z.array(z.string()).default([]), open_questions: z.array(z.string()).default([]),
-          context: z.object({ methods: z.array(z.string()).default([]), skills: z.array(z.string()).default([]) }).optional()
+          context: z.object({ methods: z.array(z.string()).default([]), skills: z.array(z.string()).default([]) }).optional(),
+          execution: z.object({ mode: z.literal("herdr"), worker_model: z.literal("luna-max"), workers: z.array(z.object({ id: z.string().min(1), objective: z.string().min(1), owns: z.array(z.string().min(1)).min(1), depends_on: z.array(z.string()) })) }).optional()
         }),
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false }
       },
-      async ({ task_id, base_revision, feedback, summary, plan_markdown, files_to_inspect, acceptance_criteria, tests, risks, open_questions, context }) => {
-        const task = await store.submitPlanRevision(task_id, base_revision, { summary, planMarkdown: plan_markdown, filesToInspect: files_to_inspect, acceptanceCriteria: acceptance_criteria, tests, risks, openQuestions: open_questions, ...(context ? { context } : {}) }, feedback, context);
+      async ({ task_id, base_revision, feedback, summary, plan_markdown, files_to_inspect, acceptance_criteria, tests, risks, open_questions, context, execution }) => {
+        const executionContract = execution ? { mode: execution.mode, workerModel: execution.worker_model, workers: execution.workers.map((worker) => ({ id: worker.id, objective: worker.objective, owns: worker.owns, dependsOn: worker.depends_on })) } : undefined;
+        if (executionContract) validateHerdrContract(executionContract);
+        const task = await store.submitPlanRevision(task_id, base_revision, { summary, planMarkdown: plan_markdown, filesToInspect: files_to_inspect, acceptanceCriteria: acceptance_criteria, tests, risks, openQuestions: open_questions, ...(context ? { context } : {}), ...(executionContract ? { execution: executionContract } : {}) }, feedback, context);
         return text({ ok: true, task_id: task.id, status: task.status, revision: task.planRevisions?.currentRevision });
       }
     );
@@ -297,6 +306,21 @@ export function createPlannerMcpFactory(store: TaskStore, config: PlannerConfig)
           review: task.review,
           git_evidence: task.gitEvidence
         });
+      }
+    );
+
+    server.registerTool(
+      "execution_summary",
+      {
+        title: "Execution summary",
+        description: "Read-only persisted Pi/Herdr execution snapshot. Worker reports are evidence, not workspace truth.",
+        inputSchema: z.object({ task_id: z.string().uuid() }),
+        annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
+      },
+      async ({ task_id }) => {
+        const task = await store.getTask(task_id);
+        const workspaceEvidence = task.gitEvidence?.postExecution;
+        return text({ task_id: task.id, execution: task.execution ?? null, git_evidence: task.gitEvidence ?? null, workspace_evidence: workspaceEvidence ? { ...workspaceEvidence, authoritative: true } : null, captured_at: workspaceEvidence?.capturedAt ?? task.execution?.completedAt ?? task.execution?.startedAt ?? null, authoritative: workspaceEvidence?.authoritative === true, worker_reports_authoritative: false });
       }
     );
 

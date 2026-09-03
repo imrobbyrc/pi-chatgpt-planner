@@ -23,6 +23,12 @@ test("status sections map independently from lifecycle status", () => {
   }
 });
 
+test("planning failure is not reported as approved", () => {
+  const current = task("execution_failed");
+  delete current.plan;
+  assert.equal(approvalLabel(current), "not available");
+});
+
 test("review status renders independently from execution status", () => {
   const current = task("execution_completed");
   current.review = { status: "changes_requested", iteration: 2, reviews: [] };

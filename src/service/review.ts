@@ -3,6 +3,8 @@ import type { GitEvidence, PlannerTask } from "../types.js";
 import { findingsSummary, reviewPromptFor, type PlannerExecutor } from "../executor.js";
 import type { TaskStore } from "../task-store.js";
 import type { ChatGptBrowserController } from "../browser/chatgpt.js";
+import { correctionOwner, correctionRoute } from "../worker-routing.js";
+import { captureWorkspaceBaseline, changedFilesFromBaseline } from "../workspace/git.js";
 
 export interface ReviewDependencies {
   store: TaskStore;
@@ -16,7 +18,7 @@ export interface ReviewDependencies {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function captureEvidence(workspaceRoot: string): Promise<GitEvidence> {
-  const evidence: GitEvidence = { capturedAt: new Date().toISOString(), gitStatus: "", gitDiff: "" };
+  const evidence: GitEvidence = { capturedAt: new Date().toISOString(), source: "review", authoritative: true, gitStatus: "", gitDiff: "" };
   try { evidence.gitStatus = await gitStatus(workspaceRoot); } catch { /* non-git workspace */ }
   try { evidence.gitDiff = await gitDiff(workspaceRoot, false); } catch { /* non-git workspace */ }
   return evidence;
@@ -54,6 +56,15 @@ export class ReviewOrchestrator {
     task = await store.normalizeReview(taskId, this.deps.maxReviewIterations);
     if (task.review?.error?.kind === "planner_target_closed") {
       throw new Error("Original Temporary Chat is no longer available. This task cannot be reviewed by the same planner conversation. Create a new planning task if review is still required.");
+    }
+    if (task.review?.status === "failed" && task.review.reviews.at(-1)?.correction?.status === "failed") {
+      await store.retryFailedCorrection(taskId);
+      await this.startCorrection(await store.getTask(taskId));
+      return;
+    }
+    if (task.review?.status === "changes_requested") {
+      await this.startCorrection(task);
+      return;
     }
     if (["approved", "max_iterations_reached", "scope_expansion_required"].includes(task.review?.status ?? "")) {
       throw new Error(`Review is terminal: ${task.review?.status}`);
@@ -111,7 +122,14 @@ export class ReviewOrchestrator {
       await store.markMaxIterationsReached(task.id);
       return;
     }
-    const claimed = await store.claimCorrection(task.id);
+    const findings = task.review?.reviews.at(-1)?.findings ?? [];
+    const route = task.plan?.execution ? correctionRoute(task.plan.execution.workers, findings) : { kind: "pi-lead" as const };
+    const owner = route.kind === "worker" ? route.worker : undefined;
+    const workerRecord = owner ? task.execution?.workers?.find((worker) => worker.id === owner.id) : undefined;
+    const persistedHandle = workerRecord?.agentHandle ?? (workerRecord?.agentId && !workerRecord.agentId.startsWith("cli:") ? workerRecord.agentId : undefined);
+    const reusable = Boolean(workerRecord?.state === "completed" && persistedHandle && workerRecord.paneId);
+    const roundBaseline = await captureWorkspaceBaseline(task.workspaceRoot);
+    const claimed = await store.claimCorrection(task.id, { round, route: route.kind === "worker" && reusable ? "herdr-worker" : "pi-lead", workerId: owner?.id ?? "", agentHandle: persistedHandle ?? "", paneId: workerRecord?.paneId ?? "", correctionRoundBaseline: roundBaseline });
     if (!claimed) return; // duplicate; correction already dispatched
     await store.captureGitEvidence(task.id, "preExecution", await captureEvidence(task.workspaceRoot));
     const executor = this.deps.getExecutor(task.id);
@@ -119,20 +137,35 @@ export class ReviewOrchestrator {
       await store.saveCorrectionResult(task.id, failed(`No Pi executor configured for correction round ${round}`));
       throw new Error("no executor");
     }
-    const findings = claimed.review?.reviews.at(-1)?.findings ?? [];
     if (findings.some((finding) => finding.scopeExpansionRequired)) {
       const now = new Date().toISOString();
-      await store.saveCorrectionResult(task.id, { status: "completed", startedAt: now, completedAt: now, summary: "Correction stopped before dispatch because review exceeds approved scope.", filesChanged: [], validations: [], deviations: [], remainingIssues: ["scope: review finding exceeds approved scope"], round });
+      await store.saveCorrectionResult(task.id, { status: "failed", startedAt: now, completedAt: now, summary: "Correction stopped before dispatch because review exceeds approved scope.", filesChanged: [], validations: [], deviations: [], remainingIssues: ["scope: review finding exceeds approved scope"], round, correctionAttemptId: claimed.correctionAttempt!.attemptId, correctionAttempt: { ...claimed.correctionAttempt!, status: "failed" } });
       return;
     }
-    const result = await executor.execute({
+    await store.markCorrectionDispatched(task.id);
+    let result: import("../types.js").ExecutionResult;
+    try {
+      result = await executor.execute({
       taskId: task.id,
       request: task.request,
       plan: claimed.plan!,
       workspaceRoot: task.workspaceRoot,
+      ...(claimed.execution?.baseline ? { executionBaseline: claimed.execution.baseline } : {}),
+      ...(claimed.correctionAttempt?.attemptId ? { correctionAttemptId: claimed.correctionAttempt.attemptId } : {}),
+      ...(claimed.planRevisions?.approvedRevision ? { approvedRevision: claimed.planRevisions.approvedRevision } : {}),
+      ...(reusable ? { correctionWorkerId: owner!.id, correctionAgentHandle: persistedHandle!, correctionPaneId: workerRecord!.paneId, correctionObjective: owner!.objective, correctionOwnership: owner!.owns } : {}),
       round,
-      instructions: `Reviewer findings:\n${findingsSummary(findings)}`
-    });
+      instructions: `${owner ? `Unique approved owner: ${owner.id}. Reuse only if its exact Herdr context remains safely available; otherwise act as Pi Lead.\n\n` : "Pi Lead correction required: no unique safe worker owner.\n\n"}Reviewer findings:\n${findingsSummary(findings)}`
+      });
+    } catch (error) {
+      result = failed(error instanceof Error ? error.message : String(error));
+    }
+    if (claimed.correctionAttempt && (!result.correctionAttempt || !result.correctionAttempt.scopeEvidence)) {
+      const finalFiles = await changedFilesFromBaseline(task.workspaceRoot, claimed.execution?.baseline ?? claimed.correctionAttempt.correctionRoundBaseline!);
+      const correctionAttempt = { ...(result.correctionAttempt ?? claimed.correctionAttempt), status: result.status === "completed" ? "completed" as const : "failed" as const, correctionFilesChanged: result.correctionAttempt?.correctionFilesChanged ?? finalFiles, correctionRoundBaseline: result.correctionAttempt?.correctionRoundBaseline ?? claimed.correctionAttempt.correctionRoundBaseline!, scopeEvidence: { changedFiles: finalFiles, unownedFiles: [], ambiguousOwnerFiles: [], ownersByFile: Object.fromEntries(finalFiles.map((file) => [file, []])) }, ...(result.status === "completed" && !result.correctionAttempt?.proof ? { proof: { route: claimed.correctionAttempt.route, attemptId: claimed.correctionAttempt.attemptId, round, matched: true } } : {}) };
+      result = { ...result, filesChanged: finalFiles, correctionAttemptId: claimed.correctionAttempt.attemptId, correctionAttempt, ...(correctionAttempt.proof ? { proof: correctionAttempt.proof } : {}) };
+    }
+    await store.captureGitEvidence(task.id, "postExecution", await captureEvidence(task.workspaceRoot));
     await store.saveCorrectionResult(task.id, result);
     const updated = await store.getTask(task.id);
     if (updated.review?.status === "correction_completed") await this.runReviewRound(task.id);

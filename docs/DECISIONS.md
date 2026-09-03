@@ -46,6 +46,12 @@ V2 attaches only to persisted `task.chat.targetId` and verifies exact `chatgpt.c
 
 Corrections execute only through Pi's correlated executor. ChatGPT retains read-only workspace tools plus protocol-state writes (`submit_plan`, `submit_review`). Review/fix rounds stop at configured finite limit and never commit, push, or deploy.
 
+## ADR-011 — V2.2 explicit Herdr execution
+
+`/chatgpt-plan-max` is the only multi-agent entry point; normal planning stays single-agent. Approval locks a 1–4 worker Herdr DAG, fixed Luna Max model `openai-codex/gpt-5.6-luna`, objectives, ownership, dependencies, and approved context. Pi Lead owns Herdr panes and shared-tree mutation; workers cannot delegate. Conservative overlap checks permit parallelism only for proven separate scopes. Failed workers stop dependents and are never automatically replayed. Same planner target performs final review.
+
+V2.2 is live-accepted. FINAL4 proved unique-owner same-worker correction reuse with persisted `CorrectionAttempt`, restart fail-closed semantics, fresh correction-turn/state-change evidence, current correction instructions superseding historical content requirements, real-newline prompt formatting, and clean authoritative scope evidence. Task `6a513223-f0c3-4fb1-9b79-b981e07fc9dc`: review #1 `CHANGES_REQUESTED`; owner mutated `pending → verified` on same handle/pane; control stayed unchanged; same-target review #2 `APPROVED`; semantic iterations: 2.
+
 ## ADR-010 — V2.1 current task and revision contract
 
 Current task is session-only UX state; persisted task lifecycle remains source of truth. Explicit UUID/prefix wins, and ambiguous candidates fail closed. Pre-approval adjustments reuse original ChatGPT target and append complete revisions. Approval locks exact revision and context for execution/review. Pi-controlled active methods and selected skills are exposed through bounded read-only MCP discovery; ChatGPT cannot activate methods or write workspace.

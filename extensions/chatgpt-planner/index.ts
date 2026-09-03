@@ -7,6 +7,7 @@ import { PiMessageExecutor } from "../../src/executor.js";
 import { TaskResolver, taskShortId, taskTitle, type TaskCommand } from "../../src/task-resolver.js";
 import { activeMethodNamesFromSession } from "../../src/skills.js";
 import { parseAdjustment, parseFreeForm } from "../../src/command-parser.js";
+import { HerdrCliAdapter, HerdrExecutor } from "../../src/herdr.js";
 
 export function planningLabel(task: PlannerTask): "complete" | "failed" | "in progress" {
   if (task.status === "planning") return "in progress";
@@ -16,7 +17,7 @@ export function planningLabel(task: PlannerTask): "complete" | "failed" | "in pr
 
 export function approvalLabel(task: PlannerTask): "awaiting approval" | "approved" | "rejected" | "not available" {
   if (task.status === "rejected") return "rejected";
-  if (["approved", "executing", "execution_completed", "execution_failed"].includes(task.status)) return "approved";
+  if (["approved", "executing", "execution_completed"].includes(task.status) || (task.status === "execution_failed" && Boolean(task.plan))) return "approved";
   if (["plan_received", "awaiting_approval"].includes(task.status)) return "awaiting approval";
   return "not available";
 }
@@ -48,7 +49,16 @@ function presentationState(task: PlannerTask): string {
 }
 
 export function renderStatus(task: PlannerTask): string {
-  return `Planning: ${planningLabel(task)}\nApproval: ${approvalLabel(task)}\nExecution: ${executionLabel(task)}\nReview: ${reviewLabel(task)}`;
+  const base = `Planning: ${planningLabel(task)}\nApproval: ${approvalLabel(task)}\nExecution: ${executionLabel(task)}\nReview: ${reviewLabel(task)}`;
+  const contract = task.plan?.execution;
+  if (!contract) return base;
+  const records = task.execution?.workers ?? [];
+  const workers = contract.workers.map((worker) => {
+    const record = records.find((item) => item.id === worker.id);
+    const state = record?.state ?? (worker.dependsOn.length ? `waiting on ${worker.dependsOn.join(", ")}` : task.execution?.status === "running" ? "ready" : "pending");
+    return `${state === "completed" ? "✓" : state === "failed" ? "✗" : "○"} ${worker.id} ${state}`;
+  });
+  return `${base}\nExecution mode: Herdr\nWorker model: Luna Max\nWorkers:\n${workers.join("\n")}`;
 }
 
 function renderReview(task: PlannerTask): string {
@@ -76,6 +86,7 @@ function renderPlan(task: PlannerTask): string {
     revision ? `Plan revision: ${revision}${approved === revision ? " (approved)" : ""}` : "",
     plan.context?.methods.length ? `Methods: ${plan.context.methods.join(", ")}` : "",
     plan.context?.skills.length ? `Skills: ${plan.context.skills.join(", ")}` : "",
+    plan.execution ? `Execution: Herdr multi-agent · Luna Max · ${plan.execution.workers.length} workers\nWorkers: ${plan.execution.workers.map((worker) => worker.id).join(", ")}` : "",
     "",
     plan.planMarkdown.trim(),
     "",
@@ -244,6 +255,30 @@ export default function chatGptPlannerExtension(pi: ExtensionAPI) {
     }
   });
 
+  async function runPlanning(args: string, ctx: Parameters<NonNullable<Parameters<ExtensionAPI["registerCommand"]>[1]["handler"]>>[1], mode: "single" | "herdr") {
+    const request = parseFreeForm(args);
+    if (!request) { ctx.ui.notify("Usage: /chatgpt-plan <task>", "warning"); return; }
+    if (!ctx.isProjectTrusted()) { ctx.ui.notify("This project must be trusted before exposing workspace reads through MCP.", "error"); return; }
+    const planner = await getRuntime();
+    const snapshot = await planner.infraSnapshot();
+    if (!snapshot.ready) { ctx.ui.notify(`Pi ChatGPT Planner is not ready.\n${renderSnapshot(planner, snapshot)}\nRun /chatgpt-planner-start and retry.`, "error"); return; }
+    ctx.ui.setStatus("chatgpt-planner", "Preparing ChatGPT planner…");
+    try {
+      const activeMethods = activeMethodNamesFromSession(ctx.sessionManager.getBranch());
+      const { task, browser } = await planner.createAndSendTask(ctx.cwd, request, activeMethods, mode);
+      currentTaskId = task.id;
+      ctx.ui.setStatus("chatgpt-planner", `Waiting for ChatGPT plan (${task.id.slice(0, 8)})…`);
+      for (const warning of browser.warnings) ctx.ui.notify(warning, "warning");
+      const completed = await planner.store.waitForPlan(task.id, planner.config.planTimeoutMs);
+      ctx.ui.setStatus("chatgpt-planner", undefined);
+      ctx.ui.setWidget("chatgpt-planner", [`✓ ChatGPT plan received: ${completed.plan?.summary ?? task.id}`, `Task ${task.id.slice(0, 8)} · use /chatgpt-plan-status to reopen`]);
+      ctx.ui.notify(mode === "herdr" ? "ChatGPT multi-agent plan received." : "ChatGPT planning round-trip completed.", "info");
+      if (ctx.hasUI) await ctx.ui.editor(mode === "herdr" ? "ChatGPT multi-agent plan — awaiting approval" : "ChatGPT plan — awaiting approval", renderPlan(completed));
+    } catch (error) { ctx.ui.setStatus("chatgpt-planner", undefined); ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"); }
+  }
+
+  pi.registerCommand("chatgpt-plan-max", { description: "Ask ChatGPT Web for an explicit Herdr multi-agent plan", handler: async (args, ctx) => runPlanning(args, ctx, "herdr") });
+
   pi.registerCommand("chatgpt-plan", {
     description: "Ask ChatGPT Web to inspect this workspace via MCP and return a plan",
     handler: async (args, ctx) => {
@@ -300,7 +335,10 @@ export default function chatGptPlannerExtension(pi: ExtensionAPI) {
         const planner = await getRuntime();
         const { id } = splitOptionalId(args);
         const selected = await resolveTask(planner, "approve", id);
-        const task = await planner.approveTask(selected.id, new PiMessageExecutor((message) => pi.sendUserMessage(message)));
+        const executor = selected.requestedExecutionMode === "herdr"
+          ? new HerdrExecutor(new HerdrCliAdapter(), new PiMessageExecutor((message) => pi.sendUserMessage(message)))
+          : new PiMessageExecutor((message) => pi.sendUserMessage(message));
+        const task = await planner.approveTask(selected.id, executor);
         ctx.ui.notify(`${task.id}: ${task.status}`, "info");
       } catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"); }
     }

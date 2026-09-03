@@ -1,8 +1,9 @@
 import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
-import type { ChatSessionMetadata, ExecutionResult, GitEvidence, PlanRevision, PlannerContext, PlannerPlan, PlannerTask, ReviewFinding, ReviewRecord, ReviewState, TaskStatus } from "./types.js";
+import type { ChatSessionMetadata, CorrectionAttempt, ExecutionResult, GitEvidence, PlanRevision, PlannerContext, PlannerPlan, PlannerTask, ReviewFinding, ReviewRecord, ReviewState, TaskStatus } from "./types.js";
 import { normalizeReviewState } from "./review-state.js";
+import { validateHerdrContract } from "./herdr-contract.js";
 
 const transitions: Record<TaskStatus, readonly TaskStatus[]> = {
   planning: ["plan_received", "execution_failed"],
@@ -19,9 +20,9 @@ export class TaskStore {
   constructor(stateDir: string) { this.tasksDir = join(stateDir, "tasks"); }
   async init(): Promise<void> { await mkdir(this.tasksDir, { recursive: true }); }
 
-  async createTask(workspaceRoot: string, request: string, activeMethods: string[] = []): Promise<PlannerTask> {
+  async createTask(workspaceRoot: string, request: string, activeMethods: string[] = [], requestedExecutionMode: "single" | "herdr" = "single"): Promise<PlannerTask> {
     await this.init(); const now = new Date().toISOString();
-    const task: PlannerTask = { id: randomUUID(), createdAt: now, updatedAt: now, workspaceRoot, request, ...(activeMethods.length ? { activeMethods } : {}), status: "planning" };
+    const task: PlannerTask = { id: randomUUID(), createdAt: now, updatedAt: now, workspaceRoot, request, activeMethods, requestedExecutionMode, status: "planning" };
     await this.writeTask(task); return task;
   }
   async getTask(id: string): Promise<PlannerTask> { const raw = await readFile(this.pathFor(id), "utf8"); return JSON.parse(raw) as PlannerTask; }
@@ -36,6 +37,9 @@ export class TaskStore {
   async submitPlan(id: string, plan: Omit<PlannerPlan, "submittedAt">): Promise<PlannerTask> {
     return this.mutate(id, (task) => {
       if (task.status !== "planning") throw new Error(`Cannot submit plan from status ${task.status}`);
+      if (task.requestedExecutionMode === "herdr" && !plan.execution) throw new Error("Multi-agent plan must include a Herdr execution contract.");
+      if (plan.execution) validateHerdrContract(plan.execution);
+      if (plan.context?.methods.some((method) => !(task.activeMethods ?? []).includes(method))) throw new Error("Plan context includes method not active in Pi task snapshot.");
       const complete = { ...plan, submittedAt: new Date().toISOString() };
       const revision: PlanRevision = { revision: 1, plan: complete, targetId: task.chat?.targetId ?? "", ...(complete.context ? { context: complete.context } : {}), createdAt: complete.submittedAt };
       return { ...task, plan: complete, planRevisions: { currentRevision: 1, revisions: [revision] }, status: "plan_received" };
@@ -48,6 +52,9 @@ export class TaskStore {
       if (!revisions || revisions.currentRevision !== baseRevision) throw new Error(`Stale plan revision: expected ${revisions?.currentRevision ?? 1}, got ${baseRevision}`);
       if (!task.chat?.targetId) throw new Error("Cannot revise plan without planner target identity");
       const revision = revisions.currentRevision + 1;
+      if (task.requestedExecutionMode === "herdr" && !plan.execution) throw new Error("Multi-agent revision must include a Herdr execution contract.");
+      if (plan.execution) validateHerdrContract(plan.execution);
+      if (plan.context?.methods.some((method) => !(task.activeMethods ?? []).includes(method))) throw new Error("Plan context includes method not active in Pi task snapshot.");
       const inheritedContext = context ?? task.plan?.context;
       const complete = { ...plan, submittedAt: new Date().toISOString(), ...(inheritedContext ? { context: inheritedContext } : {}) };
       const next: PlanRevision = { revision, plan: complete, targetId: task.chat.targetId, ...(inheritedContext ? { context: inheritedContext } : {}), createdAt: complete.submittedAt, feedback };
@@ -69,9 +76,10 @@ export class TaskStore {
       const revision = task.planRevisions?.currentRevision ?? 1;
       const fingerprint = createHash("sha256").update(JSON.stringify(task.plan)).digest("hex");
       const lockedRevision = task.planRevisions ? { planRevisions: { ...task.planRevisions, approvedRevision: revision, approvedPlanFingerprint: fingerprint } } : {};
+      const workers = task.plan?.execution?.workers.map((worker) => ({ ...worker, state: "pending" as const, model: "openai-codex/gpt-5.6-luna" as const, thinkingLevel: "max" as const }));
       return this.writeUpdated({ ...task, ...lockedRevision, status: "executing", execution: {
-        status: "running", startedAt, completedAt: "", summary: "Pi agent execution running.",
-        filesChanged: [], validations: [], deviations: [], remainingIssues: []
+        status: "running", startedAt, completedAt: "", summary: task.plan?.execution ? "Herdr multi-agent execution running." : "Pi agent execution running.",
+        filesChanged: [], validations: [], deviations: [], remainingIssues: [], ...(workers ? { workers } : {})
       } });
     });
   }
@@ -177,11 +185,37 @@ export class TaskStore {
   }
 
   /** Atomic correction claim: exactly one dispatch per changes_requested transition. */
-  async claimCorrection(id: string): Promise<PlannerTask | undefined> {
+  async claimCorrection(id: string, attempt?: Omit<CorrectionAttempt, "attemptId" | "status">): Promise<PlannerTask | undefined> {
     return this.withLock(async () => {
       const task = await this.getTask(id);
-      if (task.review?.status !== "changes_requested") return undefined;
-      return this.writeUpdated({ ...task, review: { ...task.review, status: "correction_executing" } });
+      if (task.review?.status !== "changes_requested" || task.correctionAttempt?.status === "claimed" || task.correctionAttempt?.status === "dispatched") return undefined;
+      if (!attempt) return undefined;
+      const correctionAttempt: CorrectionAttempt = { ...attempt, attemptId: randomUUID(), status: "claimed" };
+      return this.writeUpdated({ ...task, correctionAttempt, review: { ...task.review, status: "correction_executing" } });
+    });
+  }
+
+  async markCorrectionDispatched(id: string): Promise<PlannerTask> {
+    return this.mutate(id, (task) => {
+      if (task.review?.status !== "correction_executing" || task.correctionAttempt?.status !== "claimed") throw new Error("Correction attempt is not claimable for dispatch.");
+      return { ...task, correctionAttempt: { ...task.correctionAttempt, status: "dispatched" } };
+    });
+  }
+
+  async recoverInterruptedCorrections(): Promise<PlannerTask[]> {
+    const tasks = await this.listTasks(); const recovered: PlannerTask[] = [];
+    for (const task of tasks) {
+      if (task.review?.status !== "correction_executing" || !task.correctionAttempt) continue;
+      recovered.push(await this.mutate(task.id, (current) => ({ ...current, correctionAttempt: { ...current.correctionAttempt!, status: "ambiguous" }, review: { ...current.review!, status: "failed", error: { kind: "other" as const, message: "Correction interrupted; inspect workspace before retrying.", occurredAt: new Date().toISOString() } } })));
+    }
+    return recovered;
+  }
+
+  async retryFailedCorrection(id: string): Promise<PlannerTask> {
+    return this.mutate(id, (task) => {
+      const review = task.review; const record = review?.reviews.at(-1);
+      if (!review || review.status !== "failed" || record?.correction?.status !== "failed") throw new Error("No failed correction awaiting retry");
+      return { ...task, review: { ...review, status: "changes_requested" } };
     });
   }
 
@@ -191,11 +225,23 @@ export class TaskStore {
       const record = task.review.reviews.at(-1);
       const scopeBlocked = record?.findings.some((finding) => finding.scopeExpansionRequired) === true
         || result.remainingIssues.some((issue) => issue.startsWith("scope:"));
-      const nextStatus = result.status === "failed" ? "failed" : scopeBlocked ? "scope_expansion_required" : "correction_completed";
+      const attempt = task.correctionAttempt;
+      const candidate = result.correctionAttempt;
+      const turn = candidate?.herdrTurn;
+      const herdrProofValid = attempt?.route !== "herdr-worker" || Boolean(candidate && turn && candidate.workerId === attempt.workerId && candidate.agentHandle === attempt.agentHandle && candidate.paneId === attempt.paneId && turn.agentHandle === attempt.agentHandle && turn.paneId === attempt.paneId && turn.turnObserved === true && turn.prompt.exitCode === 0 && turn.after?.name === attempt.agentHandle && turn.after?.paneId === attempt.paneId);
+      const proofValid = Boolean(attempt && result.correctionAttemptId === attempt.attemptId && result.round === attempt.round && candidate?.attemptId === attempt.attemptId && candidate.route === attempt.route && candidate.proof?.attemptId === attempt.attemptId && candidate.proof.round === attempt.round && candidate.proof.route === attempt.route && candidate.proof.matched === true && candidate.status === "completed" && candidate.scopeEvidence && candidate.scopeEvidence.unownedFiles.length === 0 && candidate.scopeEvidence.ambiguousOwnerFiles.length === 0 && candidate.correctionRoundBaseline && herdrProofValid);
+      if (result.status === "completed" && !proofValid) throw new Error("Correction completion proof missing or does not match current attempt.");
+      const nextStatus = scopeBlocked ? "scope_expansion_required" : result.status === "failed" ? "failed" : "correction_completed";
       const reviews = record
         ? [...task.review.reviews.slice(0, -1), { ...record, correction: result }]
         : task.review.reviews;
-      return { ...task, review: { ...task.review, status: nextStatus, reviews } };
+      const execution = task.execution && (result.baseline || result.scopeEvidence)
+        ? { ...task.execution, ...(result.baseline ? { baseline: result.baseline } : {}), filesChanged: result.filesChanged, deviations: result.deviations, remainingIssues: result.remainingIssues, ...(result.scopeEvidence ? { scopeEvidence: result.scopeEvidence } : {}) }
+        : task.execution;
+      const persistedAttempt = attempt && result.correctionAttempt
+        ? { ...attempt, ...result.correctionAttempt, status: nextStatus === "correction_completed" ? "completed" as const : "failed" as const }
+        : attempt;
+      return { ...task, ...(execution ? { execution } : {}), ...(persistedAttempt ? { correctionAttempt: persistedAttempt } : {}), review: { ...task.review, status: nextStatus, reviews } };
     });
   }
   async pendingReviewTasks(): Promise<PlannerTask[]> {
@@ -208,7 +254,7 @@ export class TaskStore {
     for (const task of pending) {
       closed.push(await this.mutate(task.id, (current) => {
         const review = current.review;
-        if (!review || !["awaiting_review", "reviewing", "changes_requested", "correction_completed"].includes(review.status)) return current;
+        if (!review || !["awaiting_review", "reviewing", "changes_requested", "correction_executing", "correction_completed"].includes(review.status)) return current;
         const error = { kind: "planner_target_closed" as const, message: "Original Temporary Chat is no longer available because Pi closed its planner Dia target.", occurredAt: new Date().toISOString() };
         const latest = review.reviews.at(-1);
         const reviews = latest?.status === "reviewing"
@@ -218,6 +264,16 @@ export class TaskStore {
       }));
     }
     return closed;
+  }
+
+  async recoverInterruptedExecutions(): Promise<PlannerTask[]> {
+    const tasks = await this.listTasks();
+    const recovered: PlannerTask[] = [];
+    for (const task of tasks) {
+      if (task.status !== "executing") continue;
+      recovered.push(await this.mutate(task.id, (current) => ({ ...current, status: "execution_failed", error: "Execution interrupted while workers were starting/running; inspect workspace before retrying.", ...(current.execution ? { execution: { ...current.execution, status: "failed" as const, completedAt: new Date().toISOString(), summary: "Execution needs attention: worker state is ambiguous after Pi restart.", error: "worker_lifecycle_ambiguous" } } : {}) })));
+    }
+    return recovered;
   }
 
   async failTask(id: string, error: string): Promise<PlannerTask> {

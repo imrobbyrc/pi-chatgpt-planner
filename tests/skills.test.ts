@@ -9,7 +9,13 @@ test("Pi extension state adapter observes generic enabled method entries", () =>
   assert.deepEqual(activeMethodNamesFromSession([
     { type: "custom", customType: "design-thinking-state", data: { enabled: true } },
     { type: "custom", customType: "other-state", data: { enabled: false } },
+    { type: "custom", customType: "design-thinking-state", data: { enabled: false } },
     { type: "message", customType: "ignored", data: { enabled: true } }
+  ]), []);
+  assert.deepEqual(activeMethodNamesFromSession([
+    { type: "custom", customType: "design-thinking-state", data: { enabled: true } },
+    { type: "custom", customType: "design-thinking-state", data: { enabled: false } },
+    { type: "custom", customType: "design-thinking-state", data: { enabled: true } }
   ]), ["design-thinking"]);
 });
 
