@@ -8,7 +8,7 @@ import { SecureTunnel } from "./tunnel.js";
 import { PlannerDia } from "./dia.js";
 import { ReviewOrchestrator } from "./review.js";
 
-import { gitDiff, gitStatus } from "../workspace/git.js";
+import { captureWorkspaceBaseline, gitDiff, gitStatus } from "../workspace/git.js";
 
 async function safeGit(fn: () => Promise<string>): Promise<string> {
   try { return await fn(); } catch { return ""; }
@@ -22,6 +22,7 @@ export class PlannerRuntime {
   readonly infrastructure: PlannerInfrastructureManager;
   readonly tunnel: SecureTunnel;
   readonly dia: PlannerDia;
+  private recoveredInterrupted = false;
 
   constructor(readonly config: PlannerConfig, private readonly executor?: PlannerExecutor) {
     this.store = new TaskStore(config.stateDir);
@@ -58,8 +59,10 @@ export class PlannerRuntime {
     await this.store.captureGitEvidence(id, "preExecution", { capturedAt: new Date().toISOString(), gitStatus: await safeGit(() => gitStatus(claimed.workspaceRoot)), gitDiff: await safeGit(() => gitDiff(claimed.workspaceRoot, false)) });
     if (!executor) throw new Error("No Pi executor configured");
     try {
-      const result = await executor.execute({ taskId: claimed.id, request: claimed.request, plan: claimed.plan!, workspaceRoot: claimed.workspaceRoot, instructions: "Follow project AGENTS.md instructions." });
+      const executionBaseline = await captureWorkspaceBaseline(claimed.workspaceRoot);
+      const result = await executor.execute({ taskId: claimed.id, request: claimed.request, plan: claimed.plan!, workspaceRoot: claimed.workspaceRoot, executionBaseline, ...(claimed.planRevisions?.approvedRevision ? { approvedRevision: claimed.planRevisions.approvedRevision } : {}), onLifecycle: async (execution) => { await this.store.saveExecution(id, execution); }, instructions: "Follow project AGENTS.md instructions." });
       if (executor instanceof PiMessageExecutor) return this.store.getTask(id); // event handler persists correlated result
+      await this.store.captureGitEvidence(id, "postExecution", { capturedAt: new Date().toISOString(), source: "pi", authoritative: true, gitStatus: await safeGit(() => gitStatus(claimed.workspaceRoot)), gitDiff: await safeGit(() => gitDiff(claimed.workspaceRoot, false)) });
       const saved = await this.store.saveExecution(id, result);
       if (saved.status === "execution_completed") this.reviews.beginReviewSafely(id);
       return saved;
@@ -92,6 +95,7 @@ export class PlannerRuntime {
 
   async start(): Promise<void> {
     // Lazy minimal start (local MCP only); full tunnel+Dia startup is /chatgpt-planner-start.
+    if (!this.recoveredInterrupted) { await this.store.recoverInterruptedExecutions(); await this.store.recoverInterruptedCorrections(); this.recoveredInterrupted = true; }
     await this.mcp.start();
   }
 
@@ -131,6 +135,8 @@ export class PlannerRuntime {
       const result = await executor.complete(messages);
       if (!result) continue;
       if (result.round) return; // correction promise persists through ReviewOrchestrator
+      const current = await this.store.getTask(taskId);
+      await this.store.captureGitEvidence(taskId, "postExecution", { capturedAt: new Date().toISOString(), source: "pi", authoritative: true, gitStatus: await safeGit(() => gitStatus(current.workspaceRoot)), gitDiff: await safeGit(() => gitDiff(current.workspaceRoot, false)) });
       const saved = await this.store.saveExecution(taskId, result);
       if (saved.status === "execution_completed") this.reviews.beginReviewSafely(taskId);
       return;
@@ -148,12 +154,12 @@ export class PlannerRuntime {
     }
   }
 
-  async createAndSendTask(workspaceRoot: string, request: string, activeMethods: string[] = []): Promise<{
+  async createAndSendTask(workspaceRoot: string, request: string, activeMethods: string[] = [], requestedExecutionMode: "single" | "herdr" = "single"): Promise<{
     task: PlannerTask;
     browser: BrowserSendResult;
   }> {
     await this.start();
-    const task = await this.store.createTask(workspaceRoot, request, activeMethods);
+    const task = await this.store.createTask(workspaceRoot, request, activeMethods, requestedExecutionMode);
     try {
       const browser = await this.browser.sendPlanningRequest(task, async (targetId) => {
         // Persist target identity before any page setup or prompt submission.

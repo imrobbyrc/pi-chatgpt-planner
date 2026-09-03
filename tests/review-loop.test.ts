@@ -74,6 +74,29 @@ test("execution_completed auto-starts review; same targetId reused; APPROVED sto
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+test("TaskStore rejects completed correction without matching proof", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-v2-proof-"));
+  try {
+    const { store, task } = await executedTask(dir);
+    await store.startReview(task.id, 3); await store.saveReviewResult(task.id, 1, "changes_requested", "fix", blocking);
+    const claimed = await store.claimCorrection(task.id, { round: 1, route: "pi-lead", correctionRoundBaseline: { capturedAt: "", files: {} } });
+    assert.ok(claimed?.correctionAttempt?.attemptId);
+    await assert.rejects(() => store.saveCorrectionResult(task.id, { ...okResult(), round: 1 }), /proof missing/);
+    assert.equal((await store.getTask(task.id)).review?.status, "correction_executing");
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("interrupted correction attempts recover without replay", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-v2-recovery-"));
+  try {
+    const { store, task } = await executedTask(dir);
+    await store.startReview(task.id, 3); await store.saveReviewResult(task.id, 1, "changes_requested", "fix", blocking);
+    await store.claimCorrection(task.id, { round: 1, route: "pi-lead", correctionRoundBaseline: { capturedAt: "", files: {} } });
+    const recovered = await store.recoverInterruptedCorrections();
+    assert.equal(recovered.length, 1); assert.equal((await store.getTask(task.id)).correctionAttempt?.status, "ambiguous"); assert.equal((await store.getTask(task.id)).review?.status, "failed");
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 test("CHANGES_REQUESTED triggers exactly one correction, then next review on same target", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-v2-"));
   try {

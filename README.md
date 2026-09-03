@@ -82,11 +82,13 @@ ChatGPT uses the custom **Pi Workspace** MCP app to inspect the actual repositor
 - `git_status`
 - `git_diff`
 - `review_context`
+- `execution_summary`
 - `test_status` (persisted Pi validation evidence; honestly reports unavailable evidence)
 
 Protocol-side writes are:
 
 - `submit_plan`
+- `submit_plan_revision`
 - `submit_review`
 
 Both write planner task JSON under `~/.pi/chatgpt-planner/tasks/`. `submit_review` stores only a structured `APPROVED` or `CHANGES_REQUESTED` verdict and findings. Neither tool can edit source files, run shell commands, create commits, or mutate git. `review_context` exposes original request, approved plan, execution summary, review history, and captured git evidence as read-only data.
@@ -279,6 +281,19 @@ Use `/chatgpt-plan-list` to inspect recent tasks and choose current task. Comman
 Plan adjustment reuses exact original planner `targetId`, stores complete immutable revision history, validates `base_revision`, and is blocked after approval. The approved revision is the executor and reviewer contract; later scope requires a new planning task.
 
 Pi skills are reusable domain/procedure knowledge. Methods control workflow (for example Design Thinking). MCP exposes read-only metadata/content discovery; active methods are controlled by Pi/user state and ChatGPT cannot activate them. Each planner task uses the Pi planning method active when that task starts; ChatGPT receives only that task-scoped active-method context and cannot activate or change methods. Only selected context is persisted with each plan revision and carried to Pi execution and same-target review.
+
+## V2.2 explicit Herdr execution
+
+> `/chatgpt-plan-max` uses explicit Herdr multi-agent execution; `/chatgpt-plan` remains single-agent.
+
+`/chatgpt-plan` remains single-agent. `/chatgpt-plan-max <task>` explicitly requests a bounded Herdr plan; it never escalates automatically. Approval is required before workers start. Pi Lead runs 1–4 visible Pi workers in Herdr using fixed Luna Max model `openai-codex/gpt-5.6-luna`; only non-overlapping scopes run concurrently, workers cannot delegate, and failures stop downstream work. Shared working tree is used; no worktrees, commits, pushes, deploys, or replacement ChatGPT reviewer.
+
+```text
+/chatgpt-plan-max "implement stock transfer feature"
+/chatgpt-plan-adjust "backend and frontend may run in parallel"
+/chatgpt-plan-approve
+/chatgpt-plan-status
+```
 
 ## Useful Pi commands
 

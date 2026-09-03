@@ -33,10 +33,13 @@ async function metadata(path: string, scope: AgentResource["scope"], active: boo
 }
 
 export function activeMethodNamesFromSession(entries: readonly { type?: string; customType?: string; data?: unknown }[]): string[] {
-  return [...new Set(entries.flatMap((entry) => {
-    if (entry.type !== "custom" || !entry.customType?.endsWith("-state")) return [];
-    return (entry.data as { enabled?: unknown } | undefined)?.enabled === true ? [entry.customType.slice(0, -6)] : [];
-  }))];
+  const latest = new Map<string, boolean>();
+  for (const entry of entries) {
+    if (entry.type !== "custom" || !entry.customType?.endsWith("-state")) continue;
+    const enabled = (entry.data as { enabled?: unknown } | undefined)?.enabled;
+    if (typeof enabled === "boolean") latest.set(entry.customType.slice(0, -6), enabled);
+  }
+  return [...latest].filter(([, enabled]) => enabled).map(([name]) => name);
 }
 
 async function activeMethodNames(workspace: string): Promise<string[]> {
@@ -86,7 +89,7 @@ export async function listAgentSkills(task: PlannerTask): Promise<AgentResource[
 }
 export async function listActiveMethods(task: PlannerTask): Promise<AgentResource[]> {
   const discovered = await discover(task, "methods");
-  const active = new Set([...(task.activeMethods ?? []), ...await activeMethodNames(task.workspaceRoot)]);
+  const active = new Set(task.activeMethods ?? await activeMethodNames(task.workspaceRoot));
   return [...active].map((name) => discovered.find((method) => method.name === name) ?? {
     name, source: "pi-session", description: "Active Pi extension method.", scope: "user" as const,
     active: true, phases: ["planning", "execution", "review"], path: ""

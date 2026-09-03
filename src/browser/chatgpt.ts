@@ -100,6 +100,7 @@ function plannerPrompt(task: PlannerTask, appName: string): string {
     `Every workspace tool call must use task_id: ${task.id}`,
     "Before finalizing, call list_active_methods and list_agent_skills; fetch only relevant active method/skill content with get_method_context/get_agent_skill.",
     "Active methods are controlled by Pi/user state; do not activate or change them.",
+    task.requestedExecutionMode === "herdr" ? "This is explicit Herdr multi-agent planning. Return execution.mode=herdr, worker_model=luna-max, and a bounded 1-4 worker decomposition with objectives, owns scopes, and depends_on DAG." : "This is normal single-agent planning. Do not add Herdr execution metadata." ,
     "Include only relevant context names in submit_plan.context (methods and skills).",
     "Do not write source code and do not ask Pi to trust an uninspected plan.",
     "Inspect enough relevant files to understand the existing architecture, conventions, tests, and constraints.",
@@ -235,7 +236,8 @@ export class ChatGptBrowserController {
   async sendPlanRevisionPrompt(task: PlannerTask, feedback: string, baseRevision: number): Promise<void> {
     const targetId = task.chat?.targetId;
     if (!targetId) throw new Error("planner_target_unavailable: task has no stored targetId");
-    const prompt = `[PI-PLAN-REVISION:${task.id}]\n\nRevise existing plan for task ${task.id}. This is revision ${baseRevision + 1}, based on current revision ${baseRevision}.\nUser feedback:\n${feedback}\n\nUse Pi Workspace read-only tools if needed. Do not create a new plan task or conversation. Submit complete revised plan through submit_plan_revision with task_id ${task.id}, base_revision ${baseRevision}, and the full plan. Preserve applicable method/skill context unless user explicitly changed it.`;
+    const mode = task.requestedExecutionMode === "herdr" ? " Preserve complete Herdr execution contract: fixed worker_model=luna-max, 1-4 workers, valid owns scopes, and acyclic depends_on." : " Preserve single-agent execution; do not add Herdr metadata.";
+    const prompt = `[PI-PLAN-REVISION:${task.id}]\n\nRevise existing plan for task ${task.id}. This is revision ${baseRevision + 1}, based on current revision ${baseRevision}.${mode}\nUser feedback:\n${feedback}\n\nUse Pi Workspace read-only tools if needed. Do not create a new plan task or conversation. Submit complete revised plan through submit_plan_revision with task_id ${task.id}, base_revision ${baseRevision}, and the full plan. Preserve applicable method/skill context unless user explicitly changed it.`;
     await this.sendToExistingTarget(task, prompt);
   }
 

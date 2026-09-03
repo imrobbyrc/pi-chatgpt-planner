@@ -65,6 +65,7 @@ search_workspace
 git_status
 git_diff
 review_context
+execution_summary
 test_status
 list_agent_skills
 get_agent_skill

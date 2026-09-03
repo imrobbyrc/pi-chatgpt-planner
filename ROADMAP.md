@@ -77,6 +77,17 @@ V1 starts only after V0.1 manual verification confirms session settings and iden
 - [x] Fail closed on missing original target, infrastructure failure, timeout, invalid submission, or scope expansion; operational failures remain retryable and do not consume semantic iterations.
 - [x] Preserve MCP trust boundary: no source writes, shell, git mutation, execution, commit, push, or deploy tools.
 
+## V2.2 — Explicit Herdr Multi-Agent Execution (complete)
+
+- [x] `/chatgpt-plan-max` explicit opt-in; `/chatgpt-plan` remains single-agent.
+- [x] Pi Lead orchestrates 1–4 fixed Luna Max workers through approved DAG/scopes in shared working tree.
+- [x] Dependency-free, non-overlapping workers run safely in parallel; workers cannot delegate or escalate execution.
+- [x] Baseline attribution and ownership enforcement fail closed on unowned or ambiguous source changes.
+- [x] Same-target ChatGPT semantic review, persisted `CorrectionAttempt`, restart no-replay recovery, and unique-owner same-worker correction reuse.
+- [x] Correction turns require current-instruction precedence, real-newline prompts, fresh state-change evidence, and clean final scope evidence.
+
+Live acceptance complete: two parallel Luna Max workers completed, same-target review approved iteration 1. FINAL4 task `6a513223-f0c3-4fb1-9b79-b981e07fc9dc` proved review #1 `CHANGES_REQUESTED`, same owner handle/pane correction reuse with `state_change_seq` advance `3119 → 3122`, semantic owner mutation `pending → verified`, untouched control file, clean scope evidence, and review #2 `APPROVED` (semantic iterations: 2).
+
 ## V2.1 — interactive planning UX (implemented)
 
 - [x] Session current-task resolver with full UUID/unique-prefix support and concise task list.

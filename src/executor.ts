@@ -1,5 +1,5 @@
 import { gitStatus } from "./workspace/git.js";
-import type { ExecutionResult, PlannerPlan, ReviewFinding } from "./types.js";
+import type { CorrectionAttempt, ExecutionResult, PlannerPlan, ReviewFinding, WorkspaceBaseline } from "./types.js";
 
 export interface PlannerExecutorInput {
   taskId: string;
@@ -8,6 +8,17 @@ export interface PlannerExecutorInput {
   workspaceRoot: string;
   instructions: string;
   round?: number; // V2 correction round; 0/undefined = initial execution
+  approvedRevision?: number;
+  onLifecycle?: (execution: ExecutionResult) => Promise<void>;
+  correctionWorkerId?: string;
+  correctionAgentHandle?: string;
+  /** Legacy alias for persisted V2.2 tasks. */
+  correctionAgentId?: string;
+  correctionPaneId?: string;
+  correctionObjective?: string;
+  correctionOwnership?: string[];
+  executionBaseline?: WorkspaceBaseline;
+  correctionAttemptId?: string;
 }
 
 export interface PlannerExecutor {
@@ -96,6 +107,12 @@ export class PiMessageExecutor implements PlannerExecutor {
       ? ["scope: correction agent reported required scope expansion; inspect execution summary"]
       : [];
     const result: ExecutionResult = { status: "completed", startedAt: pending.startedAt, completedAt: new Date().toISOString(), summary, filesChanged, validations: [], deviations: [], remainingIssues };
+    const correctionRound = pending.input.round;
+    if (correctionRound && pending.input.correctionAttemptId) {
+      const proof = { route: "pi-lead" as const, attemptId: pending.input.correctionAttemptId, round: correctionRound, matched: true };
+      const correctionAttempt: CorrectionAttempt = { attemptId: pending.input.correctionAttemptId, round: correctionRound, route: "pi-lead", status: "completed", correctionFilesChanged: filesChanged, proof };
+      result.correctionAttemptId = pending.input.correctionAttemptId; result.correctionAttempt = correctionAttempt; result.proof = proof;
+    }
     if (pending.input.round !== undefined) result.round = pending.input.round;
     pending.resolve(result);
     return result;
